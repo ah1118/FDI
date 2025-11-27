@@ -192,13 +192,11 @@ async function writeCrewToSheet(crew) {
 // MAIN PROCESSOR (UPLOAD PDF + FIND FLIGHT + WRITE CREW)
 //--------------------------------------------
 async function processCrew() {
-    const flightNum = document.getElementById("flightNumber").value.trim();
-    if (!flightNum) return alert("Enter flight number");
+    const flight = document.getElementById("flightNumber").value.trim();
+    if (!flight) return alert("Enter flight number");
 
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
-
-    alert("Reading PDF…");
 
     const reader = new FileReader();
     reader.readAsArrayBuffer(file);
@@ -206,22 +204,56 @@ async function processCrew() {
     reader.onload = async () => {
         const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(reader.result) }).promise;
 
-        let text = "";
+        let fullText = "";
         for (let p = 1; p <= pdf.numPages; p++) {
             const page = await pdf.getPage(p);
             const content = await page.getTextContent();
-            text += content.items.map(i => i.str).join(" ") + "\n";
+            fullText += content.items.map(i => i.str).join(" ") + "\n";
         }
 
-        const flights = await parsePdfToJson(text);
+        //----------------------------------------------------
+        // FIND FLIGHT ROW
+        //----------------------------------------------------
+        const lines = fullText.split("\n");
 
-        const chosen = flights.find(f => f.flight === flightNum);
-        if (!chosen) return alert("Flight not found inside PDF");
+        // Find the index of the line containing the flight number
+        const idx = lines.findIndex(l => l.includes(` ${flight} `));
+        if (idx === -1) {
+            alert("Flight not found inside PDF!");
+            return;
+        }
 
-        if (chosen.crew.length === 0) return alert("Crew not found for this flight!");
+        //----------------------------------------------------
+        // EXTRACT CREW BLOCK
+        //----------------------------------------------------
+        let crew = [];
+        for (let i = idx + 1; i < lines.length; i++) {
+            const l = lines[i].trim();
 
-        await writeCrewToSheet(chosen.crew);
+            if (l === "") break; // stops when blank or next section
 
-        alert("DONE! Crew imported.");
+            if (
+                l.startsWith("CP ") ||
+                l.startsWith("FO ") ||
+                l.startsWith("CC ") ||
+                l.startsWith("PC ") ||
+                l.startsWith("FA ")
+            ) {
+                crew.push(l);
+            } else {
+                break;
+            }
+        }
+
+        if (crew.length === 0) {
+            alert("Crew found flight but no crew block detected!");
+            return;
+        }
+
+        //----------------------------------------------------
+        // WRITE TO GOOGLE SHEET
+        //----------------------------------------------------
+        await writeCrewToSheet(crew);
+        alert("DONE! Crew imported to your sheet.");
     };
 }
