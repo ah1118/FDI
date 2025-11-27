@@ -30,23 +30,21 @@ ipTMhgBjqcU7xDRAl+jKTxFLyp4/UM7awKk9GyHSlTSRKTkNbIDqECM/+/uOr4Zl
 Uv1sGpXdScsAbT/0owit0dXnDElmTakKIDyJgYiFj4hFwjJ7s7DlpDR2YMgWuHvK
 TRXiUFADYhLF0ornhpwUmQ==
 -----END PRIVATE KEY-----`;
-const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
-
 
 //--------------------------------------------
-// JWT + TOKEN SYSTEM
+// TOKEN SYSTEM
 //--------------------------------------------
 function base64url(source) {
-    const encoded = btoa(String.fromCharCode.apply(null, new Uint8Array(source)));
-    return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const enc = btoa(String.fromCharCode.apply(null, new Uint8Array(source)));
+    return enc.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 async function importPrivateKey(pemKey) {
     const pem = pemKey.replace(/-----[^-]+-----/g, "").replace(/\n/g, "");
-    const binaryDer = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
+    const bin = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
     return crypto.subtle.importKey(
         "pkcs8",
-        binaryDer,
+        bin,
         { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
         true,
         ["sign"]
@@ -65,18 +63,19 @@ async function generateJWT() {
         iat: now
     };
 
-    const encHeader = base64url(new TextEncoder().encode(JSON.stringify(header)));
+    const encHead = base64url(new TextEncoder().encode(JSON.stringify(header)));
     const encClaim = base64url(new TextEncoder().encode(JSON.stringify(claim)));
-    const toSign = encHeader + "." + encClaim;
 
-    const privateKey = await importPrivateKey(PRIVATE_KEY);
-    const signature = await crypto.subtle.sign(
+    const toSign = encHead + "." + encClaim;
+
+    const key = await importPrivateKey(PRIVATE_KEY);
+    const sig = await crypto.subtle.sign(
         { name: "RSASSA-PKCS1-v1_5" },
-        privateKey,
+        key,
         new TextEncoder().encode(toSign)
     );
 
-    return toSign + "." + base64url(new Uint8Array(signature));
+    return toSign + "." + base64url(new Uint8Array(sig));
 }
 
 let cachedToken = null;
@@ -96,13 +95,12 @@ async function getAccessToken() {
     const data = await res.json();
     cachedToken = data.access_token;
     tokenExpiry = now + 50 * 60 * 1000;
-
     return cachedToken;
 }
 
 
 //--------------------------------------------
-// PDF READER (GOOD VERSION)
+// PDF READER (smart Y-grouping)
 //--------------------------------------------
 pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.worker.min.js";
@@ -118,7 +116,7 @@ async function readPDF(file) {
         const lines = {};
 
         content.items.forEach((item) => {
-            const y = Math.round(item.transform[5]); // group by Y-position
+            const y = Math.round(item.transform[5]);
             if (!lines[y]) lines[y] = [];
             lines[y].push(item.str);
         });
@@ -138,13 +136,12 @@ async function readPDF(file) {
 
 
 //--------------------------------------------
-// CREW EXTRACTOR (WORKS 100%)
+// CREW EXTRACTOR (handles merged lines)
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
 
     let flightIndex = -1;
 
-    // find line containing flight number exactly
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -154,26 +151,63 @@ function extractCrew(lines, flightNumber) {
 
     if (flightIndex === -1) return { found:false, crew:[] };
 
-    console.log("FOUND FLIGHT LINE:", lines[flightIndex]);
-
     const crew = [];
 
-    // read lines under this flight
     for (let i = flightIndex + 1; i < lines.length; i++) {
         const l = lines[i].trim();
 
-        if (l === "") break; // stop on blank
+        if (l === "") break;
 
-        if (/^(CP|FO|CC|PC|FA)\b/.test(l)) {
-            crew.push(l);
+        // Stop if next flight begins
+        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) break;
+
+        if (/(CP|FO|CC|PC|FA)\s/i.test(l)) {
+
+            const parts = l.split(/(?=CP |FO |CC |PC |FA )/g);
+
+            parts.forEach(p => {
+                p = p.trim();
+                if (/^(CP|FO|CC|PC|FA)\b/.test(p)) crew.push(p);
+            });
+
             continue;
         }
-
-        // stop when next flight block begins
-        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) break;
     }
 
     return { found:true, crew };
+}
+
+
+//--------------------------------------------
+// WRITE TO GOOGLE SHEET
+//--------------------------------------------
+async function writeCrewToSheet(crew) {
+    const token = await getAccessToken();
+
+    const cpfo = crew.filter(c => c.startsWith("CP ") || c.startsWith("FO "));
+    const others = crew.filter(c => 
+        c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
+    );
+
+    const body = {
+        valueInputOption: "RAW",
+        data: [
+            { range: "Sheet1!A8", values: cpfo.map(c => [c]) },
+            { range: "Sheet1!H9", values: others.map(c => [c]) }
+        ]
+    };
+
+    await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+        {
+            method:"POST",
+            headers:{
+                "Authorization":`Bearer ${token}`,
+                "Content-Type":"application/json"
+            },
+            body:JSON.stringify(body)
+        }
+    );
 }
 
 
@@ -187,7 +221,6 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
-    // read PDF correctly
     const raw = await readPDF(file);
 
     const lines = raw
@@ -195,24 +228,11 @@ async function processCrew() {
         .map(l => l.trim())
         .filter(l => l.length > 0 && !l.startsWith("==="));
 
-    console.log("DEBUG LINES:", lines);
-
-    // extract crew
     const result = extractCrew(lines, flight);
 
-    if (!result.found) {
-        alert("Flight not found!");
-        return;
-    }
+    if (!result.found) return alert("Flight not found!");
+    if (result.crew.length === 0) return alert("Flight found but NO CREW block!");
 
-    if (result.crew.length === 0) {
-        alert("Flight found but NO CREW block!");
-        return;
-    }
-
-    console.log("CREW FOUND:", result.crew);
-
-    // write to Google Sheet
     await writeCrewToSheet(result.crew);
 
     alert("DONE! Crew imported.");
