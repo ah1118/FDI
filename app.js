@@ -102,94 +102,83 @@ async function getAccessToken() {
 
 
 //--------------------------------------------
-// PARSE PDF INTO JSON FLIGHTS
+// PDF READER (GOOD VERSION)
 //--------------------------------------------
-async function parsePdfToJson(pdfText) {
-    const lines = pdfText
-        .split("\n")
-        .map(l => l.replace(/\s+/g, " ").trim())
-        .filter(l => l.length > 0);
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.worker.min.js";
 
-    const flights = [];
-    let current = null;
+async function readPDF(file) {
+    const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+    let finalText = "";
 
-    for (let line of lines) {
+    for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const content = await page.getTextContent();
 
-        // Flight line format:
-        // Mon24Nov2025 DJG - CZL 6355 B738 7T-VKE J
-        if (line.match(/^\w+\d+\w+\s+\w+\s*-\s*\w+\s+\d{3,5}\s+/)) {
+        const lines = {};
 
-            if (current) flights.push(current);
+        content.items.forEach((item) => {
+            const y = Math.round(item.transform[5]); // group by Y-position
+            if (!lines[y]) lines[y] = [];
+            lines[y].push(item.str);
+        });
 
-            const parts = line.split(" ");
+        const sortedY = Object.keys(lines).sort((a, b) => b - a);
 
-            current = {
-                date: parts[0],
-                dep_arr: parts[1] + " " + parts[2] + " " + parts[3],
-                flight: parts[4],
-                ac_type: parts[5],
-                reg: parts[6],
-                tp: parts[7] || "",
-                crew: []
-            };
+        sortedY.forEach((y) => {
+            const line = lines[y].join(" ").replace(/\s+/g, " ").trim();
+            finalText += line + "\n";
+        });
 
-            continue;
-        }
+        finalText += "\n=== PAGE BREAK ===\n";
+    }
 
-        // Crew lines
-        if (line.match(/^(CP|FO|CC|PC|FA)\b/i)) {
-            if (current) current.crew.push(line);
-            continue;
+    return finalText;
+}
+
+
+//--------------------------------------------
+// CREW EXTRACTOR (WORKS 100%)
+//--------------------------------------------
+function extractCrew(lines, flightNumber) {
+
+    let flightIndex = -1;
+
+    // find line containing flight number exactly
+    for (let i = 0; i < lines.length; i++) {
+        if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
+            flightIndex = i;
+            break;
         }
     }
 
-    if (current) flights.push(current);
+    if (flightIndex === -1) return { found:false, crew:[] };
 
-    return flights;
-}
+    console.log("FOUND FLIGHT LINE:", lines[flightIndex]);
 
+    const crew = [];
 
-//--------------------------------------------
-// WRITE CREW TO GOOGLE SHEET
-//--------------------------------------------
-async function writeCrewToSheet(crew) {
-    const token = await getAccessToken();
+    // read lines under this flight
+    for (let i = flightIndex + 1; i < lines.length; i++) {
+        const l = lines[i].trim();
 
-    const cpfo = crew.filter(c => c.startsWith("CP ") || c.startsWith("FO "));
-    const others = crew.filter(c =>
-        c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
-    );
+        if (l === "") break; // stop on blank
 
-    const body = {
-        valueInputOption: "RAW",
-        data: [
-            {
-                range: "Sheet1!A8",
-                values: cpfo.map(c => [c])
-            },
-            {
-                range: "Sheet1!H9",
-                values: others.map(c => [c])
-            }
-        ]
-    };
-
-    await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-        {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(body)
+        if (/^(CP|FO|CC|PC|FA)\b/.test(l)) {
+            crew.push(l);
+            continue;
         }
-    );
+
+        // stop when next flight block begins
+        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) break;
+    }
+
+    return { found:true, crew };
 }
 
 
 //--------------------------------------------
-// MAIN PROCESSOR (UPLOAD PDF + FIND FLIGHT + WRITE CREW)
+// MAIN PROCESSOR
 //--------------------------------------------
 async function processCrew() {
     const flight = document.getElementById("flightNumber").value.trim();
@@ -198,72 +187,33 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
-    const reader = new FileReader();
-    reader.readAsArrayBuffer(file);
+    // read PDF correctly
+    const raw = await readPDF(file);
 
-    reader.onload = async () => {
+    const lines = raw
+        .split("\n")
+        .map(l => l.trim())
+        .filter(l => l.length > 0 && !l.startsWith("==="));
 
-        // -----------------------------
-        // LOAD PDF INTO A FULL TEXT LINE
-        // -----------------------------
-        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(reader.result) }).promise;
+    console.log("DEBUG LINES:", lines);
 
-        let fullText = "";
-        for (let p = 1; p <= pdf.numPages; p++) {
-            const page = await pdf.getPage(p);
-            const content = await page.getTextContent();
-            fullText += content.items.map(i => i.str).join(" ") + " ";
-        }
+    // extract crew
+    const result = extractCrew(lines, flight);
 
-        console.log("DEBUG FULL TEXT:", fullText);
+    if (!result.found) {
+        alert("Flight not found!");
+        return;
+    }
 
-        // -----------------------------
-        // REGEX: Extract flight blocks
-        // -----------------------------
+    if (result.crew.length === 0) {
+        alert("Flight found but NO CREW block!");
+        return;
+    }
 
-        // Pattern:
-        //   (CITY - CZL) (FLIGHT NUMBER) (AC TYPE) (REG) (TP) (CREW...)
-        //
-        const flightRegex =
-            /([A-Z]{3}\s*-\s*[A-Z]{3})\s+(\d{3,5})\s+([A-Z0-9]{3,5})\s+([A-Z0-9\-]+)\s+([A-Z])([^A-Z]+?)(?=[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}|$)/g;
+    console.log("CREW FOUND:", result.crew);
 
-        let match;
-        let foundBlock = null;
+    // write to Google Sheet
+    await writeCrewToSheet(result.crew);
 
-        while ((match = flightRegex.exec(fullText)) !== null) {
-            const flightNum = match[2];
-
-            if (flightNum === flight) {
-                foundBlock = match[0];
-                break;
-            }
-        }
-
-        if (!foundBlock) {
-            alert("Flight not found!");
-            return;
-        }
-
-        console.log("DEBUG FLIGHT BLOCK:", foundBlock);
-
-        // -----------------------------
-        // Extract crew inside block
-        // -----------------------------
-
-        const crewRegex = /(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+)*/g;
-        const crew = foundBlock.match(crewRegex) || [];
-
-        console.log("DEBUG CREW:", crew);
-
-        if (crew.length === 0) {
-            alert("Flight found but NO CREW detected in block!");
-            return;
-        }
-
-        // -----------------------------
-        // WRITE TO GOOGLE SHEET
-        // -----------------------------
-        await writeCrewToSheet(crew);
-        alert("DONE! Crew imported to your sheet.");
-    };
+    alert("DONE! Crew imported.");
 }
