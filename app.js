@@ -202,59 +202,68 @@ async function processCrew() {
     reader.readAsArrayBuffer(file);
 
     reader.onload = async () => {
+
+        // -----------------------------
+        // LOAD PDF INTO A FULL TEXT LINE
+        // -----------------------------
         const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(reader.result) }).promise;
 
         let fullText = "";
         for (let p = 1; p <= pdf.numPages; p++) {
             const page = await pdf.getPage(p);
             const content = await page.getTextContent();
-            fullText += content.items.map(i => i.str).join(" ") + "\n";
+            fullText += content.items.map(i => i.str).join(" ") + " ";
         }
 
-        //----------------------------------------------------
-        // FIND FLIGHT ROW
-        //----------------------------------------------------
-        const lines = fullText.split("\n").map(l => l.replace(/\s+/g, " ").trim());
+        console.log("DEBUG FULL TEXT:", fullText);
 
-        const idx = lines.findIndex(l => l.includes(` ${flight} `));
-        if (idx === -1) {
-            alert("Flight not found inside PDF!");
-            return;
-        }
+        // -----------------------------
+        // REGEX: Extract flight blocks
+        // -----------------------------
 
-        //----------------------------------------------------
-        // EXTRACT CREW BLOCK (NEW FIXED VERSION)
-        //----------------------------------------------------
-        let crew = [];
+        // Pattern:
+        //   (CITY - CZL) (FLIGHT NUMBER) (AC TYPE) (REG) (TP) (CREW...)
+        //
+        const flightRegex =
+            /([A-Z]{3}\s*-\s*[A-Z]{3})\s+(\d{3,5})\s+([A-Z0-9]{3,5})\s+([A-Z0-9\-]+)\s+([A-Z])([^A-Z]+?)(?=[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}|$)/g;
 
-        for (let i = idx + 1; i < lines.length; i++) {
-            let l = lines[i].replace(/\s+/g, " ").trim();
+        let match;
+        let foundBlock = null;
 
-            // Stop at next flight or empty line
-            if (l === "" || l.match(/\b\d{3,5}\b/)) break;
+        while ((match = flightRegex.exec(fullText)) !== null) {
+            const flightNum = match[2];
 
-            // Extract ALL crew roles from the line
-            const matches = l.match(/(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+)*/g);
-
-            if (matches) {
-                crew.push(...matches);
+            if (flightNum === flight) {
+                foundBlock = match[0];
+                break;
             }
         }
 
-        if (crew.length === 0) {
-            alert("Crew found flight but no crew block detected!");
-            console.log("DEBUG RAW LINE AFTER FLIGHT:", lines[idx + 1]);
-            console.log("DEBUG FULLTEXT:", fullText);
+        if (!foundBlock) {
+            alert("Flight not found!");
             return;
         }
 
-        console.log("FINAL CREW:", crew);
+        console.log("DEBUG FLIGHT BLOCK:", foundBlock);
 
-        //----------------------------------------------------
+        // -----------------------------
+        // Extract crew inside block
+        // -----------------------------
+
+        const crewRegex = /(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+)*/g;
+        const crew = foundBlock.match(crewRegex) || [];
+
+        console.log("DEBUG CREW:", crew);
+
+        if (crew.length === 0) {
+            alert("Flight found but NO CREW detected in block!");
+            return;
+        }
+
+        // -----------------------------
         // WRITE TO GOOGLE SHEET
-        //----------------------------------------------------
+        // -----------------------------
         await writeCrewToSheet(crew);
         alert("DONE! Crew imported to your sheet.");
     };
 }
-
