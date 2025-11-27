@@ -221,13 +221,13 @@ async function writeCrewToSheet(crew) {
         valueInputOption: "RAW",
         data: [
             {
-                // CP + FO go vertically A8, A9, A10...
-                range: `Sheet1!A8:A${8 + cpfo.length}`,
+                // PNT (CP + FO) → Column Z
+                range: `Sheet1!Z8:Z${8 + cpfo.length}`,
                 values: cpfo.map(c => [c])
             },
             {
-                // CC + PC + FA go vertically H9, H10...
-                range: `Sheet1!H9:H${9 + others.length}`,
+                // PNC (CC PC FA) → Column Z lower block
+                range: `Sheet1!Z20:Z${20 + others.length}`,
                 values: others.map(c => [c])
             }
         ]
@@ -245,7 +245,6 @@ async function writeCrewToSheet(crew) {
         }
     );
 }
-
 
 //--------------------------------------------
 // MAIN PROCESSOR
