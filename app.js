@@ -67,7 +67,6 @@ async function generateJWT() {
 
     const encHead = base64url(new TextEncoder().encode(JSON.stringify(header)));
     const encClaim = base64url(new TextEncoder().encode(JSON.stringify(claim)));
-
     const toSign = encHead + "." + encClaim;
 
     const key = await importPrivateKey(PRIVATE_KEY);
@@ -100,9 +99,56 @@ async function getAccessToken() {
     return cachedToken;
 }
 
+//--------------------------------------------
+// AUTO-UNMERGE (OPTION 1)
+//--------------------------------------------
+async function unmergeCrewAreas() {
+    const token = await getAccessToken();
+
+    const body = {
+        requests: [
+            {
+                unmergeCells: {
+                    range: {
+                        sheetId: 0,
+                        startRowIndex: 7,  // A8
+                        endRowIndex: 21,   // A20
+                        startColumnIndex: 0,
+                        endColumnIndex: 7  // A→G
+                    }
+                }
+            },
+            {
+                unmergeCells: {
+                    range: {
+                        sheetId: 0,
+                        startRowIndex: 8,  // H9
+                        endRowIndex: 40,   // H40 (safe)
+                        startColumnIndex: 7,
+                        endColumnIndex: 20 // H→T
+                    }
+                }
+            }
+        ]
+    };
+
+    await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`,
+        {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        }
+    );
+
+    console.log("✅ UNMERGE DONE!");
+}
 
 //--------------------------------------------
-// PDF READER (smart Y-grouping)
+// PDF READER
 //--------------------------------------------
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
@@ -136,78 +182,46 @@ async function readPDF(file) {
     return finalText;
 }
 
-
 //--------------------------------------------
-// CREW EXTRACTOR (handles merged lines)
+// CREW EXTRACTOR
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
 
     let flightIndex = -1;
 
-    console.log("🔍 Searching flight:", flightNumber);
-
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
-            console.log("✈️ FOUND FLIGHT LINE:", lines[i]);
             break;
         }
     }
 
-    if (flightIndex === -1) {
-        console.log("❌ Flight NOT FOUND!");
-        return { found:false, crew:[] };
-    }
+    if (flightIndex === -1) return { found:false, crew:[] };
 
     const crew = [];
-
-    console.log("🔍 START scanning lines under the flight…");
 
     for (let i = flightIndex + 1; i < lines.length; i++) {
         const l = lines[i].trim();
 
-        console.log(`📄 Line ${i}:`, l);
-
-        if (l === "") {
-            console.log("⛔ Blank line → stop");
-            break;
-        }
-
-        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) {
-            console.log("⛔ Next flight detected → stop");
-            break;
-        }
+        if (l === "") break;
+        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) break;
 
         if (/(CP|FO|CC|PC|FA)\s/i.test(l)) {
 
-            console.log("👀 RAW CREW LINE:", l);
-
-            // split merged lines into individual items
             const parts = l.split(/(?=CP |FO |CC |PC |FA )/g);
-
-            console.log("🔎 SPLIT PARTS:", parts);
 
             parts.forEach(p => {
                 p = p.trim();
-                if (/^(CP|FO|CC|PC|FA)\b/.test(p)) {
-                    crew.push(p);
-                    console.log("➡️ ADDED CREW:", p);
-                }
+                if (/^(CP|FO|CC|PC|FA)\b/.test(p)) crew.push(p);
             });
-
-            continue;
         }
     }
-
-    console.log("✅ FINAL CREW ARRAY:", crew);
 
     return { found:true, crew };
 }
 
-
-
 //--------------------------------------------
-// WRITE TO GOOGLE SHEET
+// WRITE TO SHEET
 //--------------------------------------------
 async function writeCrewToSheet(crew) {
     const token = await getAccessToken();
@@ -220,16 +234,8 @@ async function writeCrewToSheet(crew) {
     const body = {
         valueInputOption: "RAW",
         data: [
-            {
-                // PNT (CP + FO) → Column Z
-                range: `Sheet1!Z8:Z${8 + cpfo.length}`,
-                values: cpfo.map(c => [c])
-            },
-            {
-                // PNC (CC PC FA) → Column Z lower block
-                range: `Sheet1!Z20:Z${20 + others.length}`,
-                values: others.map(c => [c])
-            }
+            { range: `Sheet1!Z8:Z${8 + cpfo.length}`, values: cpfo.map(c => [c]) },
+            { range: `Sheet1!Z20:Z${20 + others.length}`, values: others.map(c => [c]) }
         ]
     };
 
@@ -247,7 +253,7 @@ async function writeCrewToSheet(crew) {
 }
 
 //--------------------------------------------
-// MAIN PROCESSOR
+// MAIN
 //--------------------------------------------
 async function processCrew() {
     const flight = document.getElementById("flightNumber").value.trim();
@@ -256,36 +262,22 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
-    console.log("📥 Reading PDF…");
-
     const raw = await readPDF(file);
-
-    console.log("📄 RAW PDF TEXT:", raw.substring(0, 500), "…");
 
     const lines = raw
         .split("\n")
         .map(l => l.trim())
         .filter(l => l.length > 0 && !l.startsWith("==="));
 
-    console.log("🧾 CLEANED LINES:", lines);
-
     const result = extractCrew(lines, flight);
 
-    if (!result.found) {
-        console.log("❌ No flight found in PDF.");
-        return alert("Flight not found!");
-    }
+    if (!result.found) return alert("Flight not found!");
+    if (result.crew.length === 0) return alert("Flight found but NO CREW!");
 
-    if (result.crew.length === 0) {
-        console.log("❌ Flight found but NO crew block extracted!");
-        return alert("Flight found but NO CREW block!");
-    }
-
-    console.log("🟩 FINAL CREW TO IMPORT:", result.crew);
+    // *** OPTION 1: AUTO-UNMERGE BEFORE WRITING ***
+    await unmergeCrewAreas();
 
     await writeCrewToSheet(result.crew);
-
-    console.log("✅ GOOGLE SHEET UPDATED SUCCESSFULLY");
 
     alert("DONE! Crew imported.");
 }
