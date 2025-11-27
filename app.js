@@ -144,40 +144,66 @@ function extractCrew(lines, flightNumber) {
 
     let flightIndex = -1;
 
+    console.log("🔍 Searching flight:", flightNumber);
+
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
+            console.log("✈️ FOUND FLIGHT LINE:", lines[i]);
             break;
         }
     }
 
-    if (flightIndex === -1) return { found:false, crew:[] };
+    if (flightIndex === -1) {
+        console.log("❌ Flight NOT FOUND!");
+        return { found:false, crew:[] };
+    }
 
     const crew = [];
+
+    console.log("🔍 START scanning lines under the flight…");
 
     for (let i = flightIndex + 1; i < lines.length; i++) {
         const l = lines[i].trim();
 
-        if (l === "") break;
+        console.log(`📄 Line ${i}:`, l);
 
-        // Stop if next flight begins
-        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) break;
+        if (l === "") {
+            console.log("⛔ Blank line → stop");
+            break;
+        }
+
+        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) {
+            console.log("⛔ Next flight detected → stop");
+            break;
+        }
 
         if (/(CP|FO|CC|PC|FA)\s/i.test(l)) {
 
+            console.log("👀 RAW CREW LINE:", l);
+
+            // split merged lines into individual items
             const parts = l.split(/(?=CP |FO |CC |PC |FA )/g);
+
+            console.log("🔎 SPLIT PARTS:", parts);
 
             parts.forEach(p => {
                 p = p.trim();
-                if (/^(CP|FO|CC|PC|FA)\b/.test(p)) crew.push(p);
+                if (/^(CP|FO|CC|PC|FA)\b/.test(p)) {
+                    crew.push(p);
+                    console.log("➡️ ADDED CREW:", p);
+                }
             });
 
             continue;
         }
     }
 
+    console.log("✅ FINAL CREW ARRAY:", crew);
+
     return { found:true, crew };
 }
+
 
 
 //--------------------------------------------
@@ -223,19 +249,36 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
+    console.log("📥 Reading PDF…");
+
     const raw = await readPDF(file);
+
+    console.log("📄 RAW PDF TEXT:", raw.substring(0, 500), "…");
 
     const lines = raw
         .split("\n")
         .map(l => l.trim())
         .filter(l => l.length > 0 && !l.startsWith("==="));
 
+    console.log("🧾 CLEANED LINES:", lines);
+
     const result = extractCrew(lines, flight);
 
-    if (!result.found) return alert("Flight not found!");
-    if (result.crew.length === 0) return alert("Flight found but NO CREW block!");
+    if (!result.found) {
+        console.log("❌ No flight found in PDF.");
+        return alert("Flight not found!");
+    }
+
+    if (result.crew.length === 0) {
+        console.log("❌ Flight found but NO crew block extracted!");
+        return alert("Flight found but NO CREW block!");
+    }
+
+    console.log("🟩 FINAL CREW TO IMPORT:", result.crew);
 
     await writeCrewToSheet(result.crew);
+
+    console.log("✅ GOOGLE SHEET UPDATED SUCCESSFULLY");
 
     alert("DONE! Crew imported.");
 }
