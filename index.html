@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Flight Date</title>
+  <style>
+    body {
+      background: #050509;
+      color: white;
+      font-family: Arial;
+      text-align: center;
+      margin-top: 120px;
+    }
+    input {
+      font-size: 22px;
+      padding: 12px;
+      border-radius: 8px;
+      border: none;
+    }
+    button {
+      margin-top: 20px;
+      font-size: 20px;
+      padding: 12px 30px;
+      border-radius: 8px;
+      background: #2d8cff;
+      border: none;
+      cursor: pointer;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+
+<h2>Select Flight Date</h2>
+
+<input id="date" type="date">
+
+<br>
+<button onclick="next()">Next</button>
+
+<script>
+function next() {
+  const d = document.getElementById('date').value;
+  if (!d) {
+    alert("Please choose a date");
+    return;
+  }
+
+  // Save date into URL
+  window.location = "upload.html?date=" + encodeURIComponent(d);
+}
+</script>
+
+</body>
+</html>
