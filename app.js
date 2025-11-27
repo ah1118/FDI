@@ -1,5 +1,5 @@
 //--------------------------------------------
-// SERVICE ACCOUNT (your JSON)
+// SERVICE ACCOUNT
 //--------------------------------------------
 const SERVICE_ACCOUNT_EMAIL = "feuille@fpl2024-438115.iam.gserviceaccount.com";
 const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -34,7 +34,7 @@ const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
 
 
 //--------------------------------------------
-// JWT + TOKEN
+// JWT + TOKEN SYSTEM
 //--------------------------------------------
 function base64url(source) {
     const encoded = btoa(String.fromCharCode.apply(null, new Uint8Array(source)));
@@ -102,6 +102,54 @@ async function getAccessToken() {
 
 
 //--------------------------------------------
+// PARSE PDF INTO JSON FLIGHTS
+//--------------------------------------------
+async function parsePdfToJson(pdfText) {
+    const lines = pdfText
+        .split("\n")
+        .map(l => l.replace(/\s+/g, " ").trim())
+        .filter(l => l.length > 0);
+
+    const flights = [];
+    let current = null;
+
+    for (let line of lines) {
+
+        // Flight line format:
+        // Mon24Nov2025 DJG - CZL 6355 B738 7T-VKE J
+        if (line.match(/^\w+\d+\w+\s+\w+\s*-\s*\w+\s+\d{3,5}\s+/)) {
+
+            if (current) flights.push(current);
+
+            const parts = line.split(" ");
+
+            current = {
+                date: parts[0],
+                dep_arr: parts[1] + " " + parts[2] + " " + parts[3],
+                flight: parts[4],
+                ac_type: parts[5],
+                reg: parts[6],
+                tp: parts[7] || "",
+                crew: []
+            };
+
+            continue;
+        }
+
+        // Crew lines
+        if (line.match(/^(CP|FO|CC|PC|FA)\b/i)) {
+            if (current) current.crew.push(line);
+            continue;
+        }
+    }
+
+    if (current) flights.push(current);
+
+    return flights;
+}
+
+
+//--------------------------------------------
 // WRITE CREW TO GOOGLE SHEET
 //--------------------------------------------
 async function writeCrewToSheet(crew) {
@@ -141,11 +189,11 @@ async function writeCrewToSheet(crew) {
 
 
 //--------------------------------------------
-// EXTRACT FROM PDF + PROCESS
+// MAIN PROCESSOR (UPLOAD PDF + FIND FLIGHT + WRITE CREW)
 //--------------------------------------------
 async function processCrew() {
-    const flight = document.getElementById("flightNumber").value.trim();
-    if (!flight) return alert("Enter flight number");
+    const flightNum = document.getElementById("flightNumber").value.trim();
+    if (!flightNum) return alert("Enter flight number");
 
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
@@ -165,23 +213,15 @@ async function processCrew() {
             text += content.items.map(i => i.str).join(" ") + "\n";
         }
 
-        const crew = text
-            .split("\n")
-            .map(l => l.trim())
-            .filter(l =>
-                l.startsWith("CP ") ||
-                l.startsWith("FO ") ||
-                l.startsWith("CC ") ||
-                l.startsWith("PC ") ||
-                l.startsWith("FA ")
-            );
+        const flights = await parsePdfToJson(text);
 
-        if (crew.length === 0) return alert("No crew found!");
+        const chosen = flights.find(f => f.flight === flightNum);
+        if (!chosen) return alert("Flight not found inside PDF");
 
-        alert("Writing crew to sheet…");
+        if (chosen.crew.length === 0) return alert("Crew not found for this flight!");
 
-        await writeCrewToSheet(crew);
+        await writeCrewToSheet(chosen.crew);
 
-        alert("DONE! Crew imported to your Google Sheet.");
+        alert("DONE! Crew imported.");
     };
 }
