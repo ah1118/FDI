@@ -228,16 +228,21 @@ function extractCrew(lines, flightNumber) {
 async function writeCrewToSheet(crew) {
     const token = await getAccessToken();
 
-    const cpfo = crew.filter(c => c.startsWith("CP ") || c.startsWith("FO "));
-    const others = crew.filter(c =>
-        c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
+    // Take only CP + FO
+    const pnt = crew.filter(c =>
+        c.startsWith("CP ") || c.startsWith("FO ")
     );
+
+    // Join them for copy-paste effect
+    const textBlock = pnt.join("\n"); // line breaks inside ONE cell
 
     const body = {
         valueInputOption: "RAW",
         data: [
-            { range: `Sheet1!Z8:Z${8 + cpfo.length}`, values: cpfo.map(c => [c]) },
-            { range: `Sheet1!Z20:Z${20 + others.length}`, values: others.map(c => [c]) }
+            {
+                range: "Sheet1!A8",   // ONE CELL ONLY
+                values: [[textBlock]] // put whole block inside
+            }
         ]
     };
 
@@ -252,6 +257,8 @@ async function writeCrewToSheet(crew) {
             body: JSON.stringify(body)
         }
     );
+
+    console.log("✅ DONE — PNT written as ONE BLOCK in A8");
 }
 
 //--------------------------------------------
