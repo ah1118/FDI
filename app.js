@@ -214,9 +214,8 @@ async function processCrew() {
         //----------------------------------------------------
         // FIND FLIGHT ROW
         //----------------------------------------------------
-        const lines = fullText.split("\n");
+        const lines = fullText.split("\n").map(l => l.replace(/\s+/g, " ").trim());
 
-        // Find the index of the line containing the flight number
         const idx = lines.findIndex(l => l.includes(` ${flight} `));
         if (idx === -1) {
             alert("Flight not found inside PDF!");
@@ -224,31 +223,32 @@ async function processCrew() {
         }
 
         //----------------------------------------------------
-        // EXTRACT CREW BLOCK
+        // EXTRACT CREW BLOCK (NEW FIXED VERSION)
         //----------------------------------------------------
         let crew = [];
+
         for (let i = idx + 1; i < lines.length; i++) {
-            const l = lines[i].trim();
+            let l = lines[i].replace(/\s+/g, " ").trim();
 
-            if (l === "") break; // stops when blank or next section
+            // Stop at next flight or empty line
+            if (l === "" || l.match(/\b\d{3,5}\b/)) break;
 
-            if (
-                l.startsWith("CP ") ||
-                l.startsWith("FO ") ||
-                l.startsWith("CC ") ||
-                l.startsWith("PC ") ||
-                l.startsWith("FA ")
-            ) {
-                crew.push(l);
-            } else {
-                break;
+            // Extract ALL crew roles from the line
+            const matches = l.match(/(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]+)*/g);
+
+            if (matches) {
+                crew.push(...matches);
             }
         }
 
         if (crew.length === 0) {
             alert("Crew found flight but no crew block detected!");
+            console.log("DEBUG RAW LINE AFTER FLIGHT:", lines[idx + 1]);
+            console.log("DEBUG FULLTEXT:", fullText);
             return;
         }
+
+        console.log("FINAL CREW:", crew);
 
         //----------------------------------------------------
         // WRITE TO GOOGLE SHEET
@@ -257,3 +257,4 @@ async function processCrew() {
         alert("DONE! Crew imported to your sheet.");
     };
 }
+
