@@ -108,24 +108,26 @@ async function unmergeCrewAreas() {
     const body = {
         requests: [
             {
+                // LEFT BLOCK — A8:G20
                 unmergeCells: {
                     range: {
                         sheetId: 0,
-                        startRowIndex: 7,  // A8
-                        endRowIndex: 21,   // A20
-                        startColumnIndex: 0,
-                        endColumnIndex: 7  // A→G
+                        startRowIndex: 7,   // row 8
+                        endRowIndex: 20,    // row 20
+                        startColumnIndex: 0, // A
+                        endColumnIndex: 7    // G+1
                     }
                 }
             },
             {
+                // RIGHT BLOCK — H8:T20
                 unmergeCells: {
                     range: {
                         sheetId: 0,
-                        startRowIndex: 8,  // H9
-                        endRowIndex: 40,   // H40 (safe)
-                        startColumnIndex: 7,
-                        endColumnIndex: 20 // H→T
+                        startRowIndex: 7,   // row 8
+                        endRowIndex: 20,    // row 20
+                        startColumnIndex: 7,  // H
+                        endColumnIndex: 20    // T+1
                     }
                 }
             }
@@ -144,7 +146,7 @@ async function unmergeCrewAreas() {
         }
     );
 
-    console.log("✅ UNMERGE DONE!");
+    console.log("✅ UNMERGE DONE (A8:G20) + (H8:T20)");
 }
 
 //--------------------------------------------
