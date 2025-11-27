@@ -1,134 +1,26 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Flight Crew Importer</title>
+    <title>Flight Crew Import</title>
+    <link rel="stylesheet" href="style.css">
 
-  <!-- PDF.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-
-  <style>
-    body {
-      background: #0A0A12;
-      color: #fff;
-      font-family: Arial, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding-top: 70px;
-    }
-
-    .container {
-      background: #141421;
-      padding: 35px;
-      border-radius: 14px;
-      width: 450px;
-      box-shadow: 0 0 15px rgba(0,0,0,0.6);
-    }
-
-    input, button {
-      width: 100%;
-      padding: 12px;
-      font-size: 18px;
-      margin-top: 15px;
-      border-radius: 8px;
-      border: none;
-    }
-
-    input {
-      background: #1D1D2B;
-      color: white;
-    }
-
-    button {
-      background: #2d8cff;
-      color: white;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: #1e6ed9;
-    }
-
-    h2 {
-      text-align: center;
-      margin-top: 0;
-      font-weight: 400;
-      margin-bottom: 25px;
-    }
-  </style>
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 </head>
-
 <body>
 
 <div class="container">
-  <h2>Flight Crew Import</h2>
+    <h2>Import Crew</h2>
 
-  <label>Flight Number:</label>
-  <input id="flightNumber" type="text" placeholder="6355">
+    <label>Flight Number</label>
+    <input id="flightNumber" type="text" placeholder="6355">
 
-  <label>Upload Crew PDF:</label>
-  <input id="pdfFile" type="file" accept="application/pdf">
+    <label>Upload Crew PDF</label>
+    <input id="pdfFile" type="file" accept="application/pdf">
 
-  <button onclick="processCrew()">Process Crew</button>
+    <button onclick="processCrew()">Process</button>
 </div>
 
-<script>
-const API_URL = "https://YOUR-SERVER.com/crew";  // CHANGE THIS
-
-async function processCrew() {
-  const flightNum = document.getElementById("flightNumber").value.trim();
-  if (!flightNum) return alert("Enter flight number");
-
-  const file = document.getElementById("pdfFile").files[0];
-  if (!file) return alert("Upload a PDF file");
-
-  alert("Extracting crew…");
-
-  // Read PDF
-  const reader = new FileReader();
-  reader.readAsArrayBuffer(file);
-
-  reader.onload = async () => {
-    const pdfData = new Uint8Array(reader.result);
-    const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-
-    let text = "";
-    for (let page = 1; page <= pdf.numPages; page++) {
-      const p = await pdf.getPage(page);
-      const c = await p.getTextContent();
-      text += c.items.map(i => i.str).join(" ") + "\n";
-    }
-
-    // Extract crew lines
-    const crew = text
-      .split("\n")
-      .map(l => l.trim())
-      .filter(l =>
-        l.startsWith("CP ") ||
-        l.startsWith("FO ") ||
-        l.startsWith("CC ") ||
-        l.startsWith("PC ") ||
-        l.startsWith("FA ")
-      );
-
-    console.log("Extracted crew:", crew);
-
-    alert("Sending to spreadsheet…");
-
-    // Send to backend
-    await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        flight: flightNum,
-        crew: crew
-      })
-    });
-
-    alert("Crew successfully imported into spreadsheet!");
-  };
-}
-</script>
-
+<script src="app.js"></script>
 </body>
 </html>
