@@ -213,27 +213,35 @@ async function writeCrewToSheet(crew) {
     const token = await getAccessToken();
 
     const cpfo = crew.filter(c => c.startsWith("CP ") || c.startsWith("FO "));
-    const others = crew.filter(c => 
+    const others = crew.filter(c =>
         c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
     );
 
     const body = {
         valueInputOption: "RAW",
         data: [
-            { range: "Sheet1!A8", values: cpfo.map(c => [c]) },
-            { range: "Sheet1!H9", values: others.map(c => [c]) }
+            {
+                // CP + FO go vertically A8, A9, A10...
+                range: `Sheet1!A8:A${8 + cpfo.length}`,
+                values: cpfo.map(c => [c])
+            },
+            {
+                // CC + PC + FA go vertically H9, H10...
+                range: `Sheet1!H9:H${9 + others.length}`,
+                values: others.map(c => [c])
+            }
         ]
     };
 
     await fetch(
         `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
         {
-            method:"POST",
-            headers:{
-                "Authorization":`Bearer ${token}`,
-                "Content-Type":"application/json"
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
             },
-            body:JSON.stringify(body)
+            body: JSON.stringify(body)
         }
     );
 }
