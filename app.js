@@ -188,10 +188,9 @@ async function readPDF(file) {
 // CREW EXTRACTOR
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
-
     let flightIndex = -1;
 
-    // find the line containing FLIGHT number
+    // find the flight
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -199,36 +198,30 @@ function extractCrew(lines, flightNumber) {
         }
     }
 
-    if (flightIndex === -1) return { found: false, crew: [] };
+    if (flightIndex === -1) return { found:false, crew:[] };
 
     const crew = [];
 
-    // scan lines BELOW the flight row
-    for (let i = flightIndex + 1; i < lines.length; i++) {
-        const l = lines[i].trim();
+    // regex to catch roles with names even inside long blocks
+    const roleRegex = /\b(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*/g;
 
-        if (l === "") break;
+    for (let i = flightIndex + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line === "") break;
 
         // next flight → stop
-        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(l)) break;
+        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
 
-        // detect ANY crew tag anywhere in the line
-        if (/\b(CP|FO|CC|PC|FA)\b/.test(l)) {
-
-            // split even if many words before crew
-            const parts = l.split(/(?=\bCP\b|\bFO\b|\bCC\b|\bPC\b|\bFA\b)/g);
-
-            parts.forEach(p => {
-                p = p.trim();
-                if (/\b(CP|FO|CC|PC|FA)\b/.test(p)) {
-                    crew.push(p);
-                }
-            });
+        // extract ALL “CP NAME”, “FO NAME”, ...
+        const matches = line.match(roleRegex);
+        if (matches) {
+            matches.forEach(m => crew.push(m.trim()));
         }
     }
 
-    return { found: true, crew };
+    return { found:true, crew };
 }
+
 
 
 //--------------------------------------------
