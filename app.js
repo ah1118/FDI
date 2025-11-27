@@ -191,6 +191,7 @@ function extractCrew(lines, flightNumber) {
 
     let flightIndex = -1;
 
+    // find the line containing FLIGHT number
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -198,29 +199,37 @@ function extractCrew(lines, flightNumber) {
         }
     }
 
-    if (flightIndex === -1) return { found:false, crew:[] };
+    if (flightIndex === -1) return { found: false, crew: [] };
 
     const crew = [];
 
+    // scan lines BELOW the flight row
     for (let i = flightIndex + 1; i < lines.length; i++) {
         const l = lines[i].trim();
 
         if (l === "") break;
-        if (l.match(/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/)) break;
 
-        if (/(CP|FO|CC|PC|FA)\s/i.test(l)) {
+        // next flight → stop
+        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(l)) break;
 
-            const parts = l.split(/(?=CP |FO |CC |PC |FA )/g);
+        // detect ANY crew tag anywhere in the line
+        if (/\b(CP|FO|CC|PC|FA)\b/.test(l)) {
+
+            // split even if many words before crew
+            const parts = l.split(/(?=\bCP\b|\bFO\b|\bCC\b|\bPC\b|\bFA\b)/g);
 
             parts.forEach(p => {
                 p = p.trim();
-                if (/^(CP|FO|CC|PC|FA)\b/.test(p)) crew.push(p);
+                if (/\b(CP|FO|CC|PC|FA)\b/.test(p)) {
+                    crew.push(p);
+                }
             });
         }
     }
 
-    return { found:true, crew };
+    return { found: true, crew };
 }
+
 
 //--------------------------------------------
 // WRITE TO SHEET
