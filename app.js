@@ -326,20 +326,21 @@ async function processCrew() {
         }
     }
 
-    // ===== EXTRACT CP DIRECTLY FROM ROUTE LINE =====
-    // Example: "CP OULMANE Tewfik"
-    let cpMatch = routeLine.match(/CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)/);
+    // ===== EXTRACT CP WITH MULTI-NAME SUPPORT =====
+    // captures: CP + (ALL names) before numeric/token blocks
+    let cpMatch = routeLine.match(
+        /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
+    );
 
     if (cpMatch) {
         const cpFullName = "CP " + cpMatch[1].trim();
         console.log("✔ CP detected:", cpFullName);
 
-        // Add CP only if not already included
         if (!result.crew.includes(cpFullName)) {
-            result.crew.unshift(cpFullName);
+            result.crew.unshift(cpFullName); // add CP at top
         }
     } else {
-        console.log("❌ No CP detected in flight line");
+        console.log("❌ No CP detected in route line");
     }
 
     // ===== JSON DEBUG =====
@@ -352,7 +353,7 @@ async function processCrew() {
     console.log("===== FLIGHT JSON DEBUG =====");
     console.log(JSON.stringify(debugJSON, null, 4));
 
-    // ===== AUTO-UNMERGE BEFORE WRITING =====
+    // ===== AUTO UNMERGE BEFORE WRITING =====
     await unmergeCrewAreas();
 
     // ===== WRITE CP + FO INTO A8 =====
@@ -360,5 +361,4 @@ async function processCrew() {
 
     alert("DONE! Crew imported.");
 }
-
 
