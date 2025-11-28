@@ -190,7 +190,7 @@ async function readPDF(file) {
 function extractCrew(lines, flightNumber) {
     let flightIndex = -1;
 
-    // find the flight line
+    // find the flight
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -198,48 +198,46 @@ function extractCrew(lines, flightNumber) {
         }
     }
 
-    if (flightIndex === -1) return { found:false, crew:[], info:null };
-
-    const flightLine = lines[flightIndex];
-
-    // Extract date, dep, arr, ac, reg
-    const dateMatch = flightLine.match(/^[A-Za-z0-9]+/);
-    const routeMatch = flightLine.match(/([A-Z]{3})\s*-\s*([A-Z]{3})/);
-    const acMatch = flightLine.match(/\b(A\d{3}|B\d{3}|ATR6|AT72)\b/);
-    const regMatch = flightLine.match(/\b7T[-_A-Z0-9]+\b/);
-
-    const info = {
-        flight: flightNumber,
-        date: dateMatch ? dateMatch[0] : "",
-        route: routeMatch ? routeMatch[0] : "",
-        dep: routeMatch ? routeMatch[1] : "",
-        arr: routeMatch ? routeMatch[2] : "",
-        ac_type: acMatch ? acMatch[0] : "",
-        reg: regMatch ? regMatch[0] : "",
-        crew: []
-    };
+    if (flightIndex === -1) return { found:false, crew:[] };
 
     const crew = [];
-    const roleRegex = /\b(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*/g;
 
-    // Scan below for crew
+    // match ANY of these roles:
+    const role = "(CP|FO|CC|PC|FA)";
+    const name = "[A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*";
+
+    // FULL regex:
+    const roleRegex = new RegExp(`${role}\\s+${name}`, "gi");
+
+    // Try to accumulate 2–3 lines together (because CP is split)
+    let buffer = "";
+
     for (let i = flightIndex + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line === "") break;
-        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break; // next flight
 
-        const matches = line.match(roleRegex);
+        // stop at next flight
+        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
+
+        // add to buffer
+        buffer += " " + line;
+
+        // extract all roles inside buffer
+        const matches = buffer.match(roleRegex);
         if (matches) {
-            matches.forEach(m => crew.push(m.trim()));
+            matches.forEach(m => {
+                if (!crew.includes(m.trim())) {
+                    crew.push(m.trim());
+                }
+            });
         }
+
+        // keep buffer small
+        if (buffer.length > 200) buffer = line;
     }
 
-    info.crew = crew;
-
-    return { found:true, crew, info };
+    return { found:true, crew };
 }
-
-
 
 //--------------------------------------------
 // WRITE TO SHEET
