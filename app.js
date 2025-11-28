@@ -193,7 +193,6 @@ function extractCrew(lines, flightNumber) {
     console.log(lines.slice(0, 60));
 
     let flightIndex = -1;
-
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -208,18 +207,36 @@ function extractCrew(lines, flightNumber) {
 
     console.log("✈ Found flight at line:", flightIndex);
 
-    const crewSet = new Set();  // <-- DEDUPLICATE CREW
+    const crewSet = new Set();
 
-    const roleRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/gi;
+    // regex to catch CP/FO block even if incomplete
+    const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
 
     for (let i = flightIndex + 1; i < lines.length; i++) {
 
-        const line = lines[i].trim();
-        if (line === "") break;
+        let line = lines[i].trim();
 
+        if (line === "") break;
         if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
 
-        const matches = line.match(roleRegex);
+        // If line begins with CP/FO/... but only role + ONE NAME
+        if (roleStart.test(line)) {
+
+            const parts = line.split(" ");
+            if (parts.length === 2) {
+                // Looks like: CP OULMANE  (missing first name)
+                const next = lines[i + 1] ? lines[i + 1].trim() : "";
+
+                // next line is probably the first name
+                if (/^[A-Za-zÀ-ÖØ-öø-ÿ'.-]+$/.test(next)) {
+                    line = line + " " + next; // merge
+                    i++; // skip next line
+                }
+            }
+        }
+
+        const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/g;
+        const matches = line.match(fullRegex);
         if (matches) {
             matches.forEach(m => crewSet.add(m.trim()));
         }
@@ -232,7 +249,6 @@ function extractCrew(lines, flightNumber) {
 
     return { found:true, crew };
 }
-
 
 //--------------------------------------------
 // WRITE TO SHEET
