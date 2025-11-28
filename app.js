@@ -188,9 +188,12 @@ async function readPDF(file) {
 // CREW EXTRACTOR
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
+
+    console.log("==== RAW LINES FOR DEBUG ====");
+    console.log(lines.slice(0, 60));
+
     let flightIndex = -1;
 
-    // find the flight
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -198,46 +201,38 @@ function extractCrew(lines, flightNumber) {
         }
     }
 
-    if (flightIndex === -1) return { found:false, crew:[] };
+    if (flightIndex === -1) {
+        console.log("❌ Flight not found");
+        return { found:false, crew:[] };
+    }
 
-    const crew = [];
+    console.log("✈ Found flight at line:", flightIndex);
 
-    // match ANY of these roles:
-    const role = "(CP|FO|CC|PC|FA)";
-    const name = "[A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*";
+    const crewSet = new Set();  // <-- DEDUPLICATE CREW
 
-    // FULL regex:
-    const roleRegex = new RegExp(`${role}\\s+${name}`, "gi");
-
-    // Try to accumulate 2–3 lines together (because CP is split)
-    let buffer = "";
+    const roleRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/gi;
 
     for (let i = flightIndex + 1; i < lines.length; i++) {
+
         const line = lines[i].trim();
         if (line === "") break;
 
-        // stop at next flight
         if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
 
-        // add to buffer
-        buffer += " " + line;
-
-        // extract all roles inside buffer
-        const matches = buffer.match(roleRegex);
+        const matches = line.match(roleRegex);
         if (matches) {
-            matches.forEach(m => {
-                if (!crew.includes(m.trim())) {
-                    crew.push(m.trim());
-                }
-            });
+            matches.forEach(m => crewSet.add(m.trim()));
         }
-
-        // keep buffer small
-        if (buffer.length > 200) buffer = line;
     }
+
+    const crew = [...crewSet];
+
+    console.log("==== EXTRACTED CREW CLEAN ====");
+    console.log(crew);
 
     return { found:true, crew };
 }
+
 
 //--------------------------------------------
 // WRITE TO SHEET
@@ -295,21 +290,42 @@ async function processCrew() {
         .map(l => l.trim())
         .filter(l => l.length > 0 && !l.startsWith("==="));
 
+    // extract crew
     const result = extractCrew(lines, flight);
 
-    if (!result.found) return alert("Flight not found!");
-    if (result.crew.length === 0) return alert("Flight found but NO CREW!");
+    if (!result.found) {
+        return alert("Flight not found!");
+    }
+    if (result.crew.length === 0) {
+        return alert("Flight found but NO CREW!");
+    }
 
-    // 🔥 DEBUG JSON OUTPUT HERE
+    // ===== GET ROUTE LINE (for JSON) =====
+    let routeLine = "";
+    for (let i = 0; i < lines.length; i++) {
+        if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
+            routeLine = lines[i];
+            break;
+        }
+    }
+
+    // ===== JSON DEBUG =====
+    const debugJSON = {
+        flight: flight,
+        route: routeLine,
+        crew: result.crew
+    };
+
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(JSON.stringify(result.info, null, 2));
+    console.log(JSON.stringify(debugJSON, null, 4));
 
-    // auto-unmerge
+    // ===== AUTO UNMERGE =====
     await unmergeCrewAreas();
 
-    // write pnt (CP+FO)
+    // ===== WRITE CP + FO AS ONE BLOCK =====
     await writeCrewToSheet(result.crew);
 
     alert("DONE! Crew imported.");
 }
+
 
