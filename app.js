@@ -299,6 +299,7 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
+    // Read PDF text
     const raw = await readPDF(file);
 
     const lines = raw
@@ -306,7 +307,7 @@ async function processCrew() {
         .map(l => l.trim())
         .filter(l => l.length > 0 && !l.startsWith("==="));
 
-    // extract crew
+    // Extract crew (FO, FA, CC, etc.)
     const result = extractCrew(lines, flight);
 
     if (!result.found) {
@@ -316,13 +317,29 @@ async function processCrew() {
         return alert("Flight found but NO CREW!");
     }
 
-    // ===== GET ROUTE LINE (for JSON) =====
+    // ===== FIND FLIGHT ROUTE LINE =====
     let routeLine = "";
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
             routeLine = lines[i];
             break;
         }
+    }
+
+    // ===== EXTRACT CP DIRECTLY FROM ROUTE LINE =====
+    // Example: "CP OULMANE Tewfik"
+    let cpMatch = routeLine.match(/CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)/);
+
+    if (cpMatch) {
+        const cpFullName = "CP " + cpMatch[1].trim();
+        console.log("✔ CP detected:", cpFullName);
+
+        // Add CP only if not already included
+        if (!result.crew.includes(cpFullName)) {
+            result.crew.unshift(cpFullName);
+        }
+    } else {
+        console.log("❌ No CP detected in flight line");
     }
 
     // ===== JSON DEBUG =====
@@ -335,10 +352,10 @@ async function processCrew() {
     console.log("===== FLIGHT JSON DEBUG =====");
     console.log(JSON.stringify(debugJSON, null, 4));
 
-    // ===== AUTO UNMERGE =====
+    // ===== AUTO-UNMERGE BEFORE WRITING =====
     await unmergeCrewAreas();
 
-    // ===== WRITE CP + FO AS ONE BLOCK =====
+    // ===== WRITE CP + FO INTO A8 =====
     await writeCrewToSheet(result.crew);
 
     alert("DONE! Crew imported.");
