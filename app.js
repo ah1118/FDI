@@ -268,7 +268,7 @@ async function writeCrewToSheet(crew) {
         valueInputOption: "RAW",
         data: [
             {
-                range: "Sheet1!A8",   // ONE CELL ONLY
+                range: "Sheet1!A7",   // ONE CELL ONLY
                 values: [[textBlock]] // put whole block inside
             }
         ]
@@ -304,7 +304,7 @@ async function writePNCtoSheet(crew) {
         valueInputOption: "RAW",
         data: [
             {
-                range: "Sheet1!H8",   // PNC cell
+                range: "Sheet1!H7",   // PNC cell
                 values: [[textBlock]]
             }
         ]
