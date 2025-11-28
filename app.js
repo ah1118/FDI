@@ -190,7 +190,7 @@ async function readPDF(file) {
 function extractCrew(lines, flightNumber) {
     let flightIndex = -1;
 
-    // find the flight
+    // find the flight line
     for (let i = 0; i < lines.length; i++) {
         if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
             flightIndex = i;
@@ -198,28 +198,45 @@ function extractCrew(lines, flightNumber) {
         }
     }
 
-    if (flightIndex === -1) return { found:false, crew:[] };
+    if (flightIndex === -1) return { found:false, crew:[], info:null };
+
+    const flightLine = lines[flightIndex];
+
+    // Extract date, dep, arr, ac, reg
+    const dateMatch = flightLine.match(/^[A-Za-z0-9]+/);
+    const routeMatch = flightLine.match(/([A-Z]{3})\s*-\s*([A-Z]{3})/);
+    const acMatch = flightLine.match(/\b(A\d{3}|B\d{3}|ATR6|AT72)\b/);
+    const regMatch = flightLine.match(/\b7T[-_A-Z0-9]+\b/);
+
+    const info = {
+        flight: flightNumber,
+        date: dateMatch ? dateMatch[0] : "",
+        route: routeMatch ? routeMatch[0] : "",
+        dep: routeMatch ? routeMatch[1] : "",
+        arr: routeMatch ? routeMatch[2] : "",
+        ac_type: acMatch ? acMatch[0] : "",
+        reg: regMatch ? regMatch[0] : "",
+        crew: []
+    };
 
     const crew = [];
-
-    // regex to catch roles with names even inside long blocks
     const roleRegex = /\b(CP|FO|CC|PC|FA)\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*/g;
 
+    // Scan below for crew
     for (let i = flightIndex + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line === "") break;
+        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break; // next flight
 
-        // next flight → stop
-        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
-
-        // extract ALL “CP NAME”, “FO NAME”, ...
         const matches = line.match(roleRegex);
         if (matches) {
             matches.forEach(m => crew.push(m.trim()));
         }
     }
 
-    return { found:true, crew };
+    info.crew = crew;
+
+    return { found:true, crew, info };
 }
 
 
@@ -285,10 +302,16 @@ async function processCrew() {
     if (!result.found) return alert("Flight not found!");
     if (result.crew.length === 0) return alert("Flight found but NO CREW!");
 
-    // *** OPTION 1: AUTO-UNMERGE BEFORE WRITING ***
+    // 🔥 DEBUG JSON OUTPUT HERE
+    console.log("===== FLIGHT JSON DEBUG =====");
+    console.log(JSON.stringify(result.info, null, 2));
+
+    // auto-unmerge
     await unmergeCrewAreas();
 
+    // write pnt (CP+FO)
     await writeCrewToSheet(result.crew);
 
     alert("DONE! Crew imported.");
 }
+
