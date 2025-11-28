@@ -289,6 +289,43 @@ async function writeCrewToSheet(crew) {
     console.log("✅ DONE — PNT written as ONE BLOCK in A8");
 }
 
+// WRITE PNC (CC + PC + FA) TO SHEET (H8)
+async function writePNCtoSheet(crew) {
+    const token = await getAccessToken();
+
+    // Keep CC + PC + FA only
+    const pnc = crew.filter(c =>
+        c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
+    );
+
+    const textBlock = pnc.join("\n"); // multiline block
+
+    const body = {
+        valueInputOption: "RAW",
+        data: [
+            {
+                range: "Sheet1!H8",   // PNC cell
+                values: [[textBlock]]
+            }
+        ]
+    };
+
+    await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+        {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        }
+    );
+
+    console.log("✅ DONE — PNC written as ONE BLOCK in H8");
+}
+
+
 //--------------------------------------------
 // MAIN
 //--------------------------------------------
@@ -358,6 +395,10 @@ async function processCrew() {
 
     // ===== WRITE CP + FO INTO A8 =====
     await writeCrewToSheet(result.crew);
+
+    await writePNCtoSheet(result.crew);     // CC + PC + FA → H8
+
+    
 
     alert("DONE! Crew imported.");
 }
