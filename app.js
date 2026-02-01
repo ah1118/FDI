@@ -32,121 +32,172 @@ TRXiUFADYhLF0ornhpwUmQ==
 -----END PRIVATE KEY-----`;
 
 const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
+const SHEET_TITLE = "Sheet1"; // <-- change if your tab name differs
 
 //--------------------------------------------
-// TOKEN SYSTEM
+// HELPERS
 //--------------------------------------------
 function base64url(source) {
-    const enc = btoa(String.fromCharCode.apply(null, new Uint8Array(source)));
-    return enc.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const enc = btoa(String.fromCharCode.apply(null, new Uint8Array(source)));
+  return enc.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 async function importPrivateKey(pemKey) {
-    const pem = pemKey.replace(/-----[^-]+-----/g, "").replace(/\n/g, "");
-    const bin = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
-    return crypto.subtle.importKey(
-        "pkcs8",
-        bin,
-        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-        true,
-        ["sign"]
-    );
+  const pem = pemKey.replace(/-----[^-]+-----/g, "").replace(/\n/g, "");
+  const bin = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+  return crypto.subtle.importKey(
+    "pkcs8",
+    bin,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    true,
+    ["sign"]
+  );
 }
 
 async function generateJWT() {
-    const header = { alg: "RS256", typ: "JWT" };
-    const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "RS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
 
-    const claim = {
-        iss: SERVICE_ACCOUNT_EMAIL,
-        scope: "https://www.googleapis.com/auth/spreadsheets",
-        aud: "https://oauth2.googleapis.com/token",
-        exp: now + 3600,
-        iat: now
-    };
+  const claim = {
+    iss: SERVICE_ACCOUNT_EMAIL,
+    scope: "https://www.googleapis.com/auth/spreadsheets",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now,
+  };
 
-    const encHead = base64url(new TextEncoder().encode(JSON.stringify(header)));
-    const encClaim = base64url(new TextEncoder().encode(JSON.stringify(claim)));
-    const toSign = encHead + "." + encClaim;
+  const encHead = base64url(new TextEncoder().encode(JSON.stringify(header)));
+  const encClaim = base64url(new TextEncoder().encode(JSON.stringify(claim)));
+  const toSign = encHead + "." + encClaim;
 
-    const key = await importPrivateKey(PRIVATE_KEY);
-    const sig = await crypto.subtle.sign(
-        { name: "RSASSA-PKCS1-v1_5" },
-        key,
-        new TextEncoder().encode(toSign)
-    );
+  const key = await importPrivateKey(PRIVATE_KEY);
+  const sig = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" },
+    key,
+    new TextEncoder().encode(toSign)
+  );
 
-    return toSign + "." + base64url(new Uint8Array(sig));
+  return toSign + "." + base64url(new Uint8Array(sig));
 }
 
 let cachedToken = null;
 let tokenExpiry = 0;
 
 async function getAccessToken() {
-    const now = Date.now();
-    if (cachedToken && now < tokenExpiry) return cachedToken;
+  const now = Date.now();
+  if (cachedToken && now < tokenExpiry) return cachedToken;
 
-    const jwt = await generateJWT();
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
-    });
+  const jwt = await generateJWT();
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
+  });
 
-    const data = await res.json();
-    cachedToken = data.access_token;
-    tokenExpiry = now + 50 * 60 * 1000;
-    return cachedToken;
+  const data = await res.json();
+  if (!res.ok) {
+    console.error("❌ TOKEN ERROR:", data);
+    throw new Error("Failed to get access token");
+  }
+
+  cachedToken = data.access_token;
+  tokenExpiry = now + 50 * 60 * 1000;
+  return cachedToken;
+}
+
+async function fetchJSON(url, opts = {}) {
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!res.ok) {
+    console.error("❌ HTTP ERROR", res.status, url, data);
+    throw new Error(
+      typeof data === "string" ? data : JSON.stringify(data, null, 2)
+    );
+  }
+  return data;
+}
+
+// ✅ IMPORTANT: Get the REAL sheetId from the spreadsheet
+async function getSheetIdByTitle(title) {
+  const token = await getAccessToken();
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
+    `?fields=sheets(properties(sheetId,title))`;
+
+  const data = await fetchJSON(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const sheet = (data.sheets || []).find(
+    (s) => s.properties && s.properties.title === title
+  );
+
+  if (!sheet) {
+    throw new Error(
+      `Sheet tab "${title}" not found. Existing: ` +
+        (data.sheets || []).map((s) => s.properties?.title).join(", ")
+    );
+  }
+
+  return sheet.properties.sheetId;
 }
 
 //--------------------------------------------
-// AUTO-UNMERGE (OPTION 1)
+// AUTO-UNMERGE (FIXED)
 //--------------------------------------------
 async function unmergeCrewAreas() {
-    const token = await getAccessToken();
+  const token = await getAccessToken();
+  const sheetId = await getSheetIdByTitle(SHEET_TITLE);
 
-    const body = {
-        requests: [
-            {
-                // LEFT BLOCK — A8:G20
-                unmergeCells: {
-                    range: {
-                        sheetId: 0,
-                        startRowIndex: 7,   // row 8
-                        endRowIndex: 20,    // row 20
-                        startColumnIndex: 0, // A
-                        endColumnIndex: 7    // G+1
-                    }
-                }
-            },
-            {
-                // RIGHT BLOCK — H8:T20
-                unmergeCells: {
-                    range: {
-                        sheetId: 0,
-                        startRowIndex: 7,   // row 8
-                        endRowIndex: 20,    // row 20
-                        startColumnIndex: 7,  // H
-                        endColumnIndex: 20    // T+1
-                    }
-                }
-            }
-        ]
-    };
+  const body = {
+    requests: [
+      {
+        // LEFT BLOCK — A8:G20
+        unmergeCells: {
+          range: {
+            sheetId,
+            startRowIndex: 7, // row 8 (0-based)
+            endRowIndex: 20, // row 20 (exclusive)
+            startColumnIndex: 0, // A
+            endColumnIndex: 7, // up to G (exclusive)
+          },
+        },
+      },
+      {
+        // RIGHT BLOCK — H8:T20
+        unmergeCells: {
+          range: {
+            sheetId,
+            startRowIndex: 7, // row 8
+            endRowIndex: 20, // row 20
+            startColumnIndex: 7, // H
+            endColumnIndex: 20, // up to T (exclusive)
+          },
+        },
+      },
+    ],
+  };
 
-    await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`,
-        {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(body)
-        }
-    );
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
 
-    console.log("✅ UNMERGE DONE (A8:G20) + (H8:T20)");
+  console.log("✅ UNMERGE DONE (A8:G20) + (H8:T20)");
 }
 
 //--------------------------------------------
@@ -156,250 +207,219 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
 
 async function readPDF(file) {
-    const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-    let finalText = "";
+  const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+  let finalText = "";
 
-    for (let p = 1; p <= pdf.numPages; p++) {
-        const page = await pdf.getPage(p);
-        const content = await page.getTextContent();
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
 
-        const lines = {};
+    const lines = {};
+    content.items.forEach((item) => {
+      const y = Math.round(item.transform[5]);
+      if (!lines[y]) lines[y] = [];
+      lines[y].push(item.str);
+    });
 
-        content.items.forEach((item) => {
-            const y = Math.round(item.transform[5]);
-            if (!lines[y]) lines[y] = [];
-            lines[y].push(item.str);
-        });
+    const sortedY = Object.keys(lines).sort((a, b) => b - a);
+    sortedY.forEach((y) => {
+      const line = lines[y].join(" ").replace(/\s+/g, " ").trim();
+      finalText += line + "\n";
+    });
 
-        const sortedY = Object.keys(lines).sort((a, b) => b - a);
+    finalText += "\n=== PAGE BREAK ===\n";
+  }
 
-        sortedY.forEach((y) => {
-            const line = lines[y].join(" ").replace(/\s+/g, " ").trim();
-            finalText += line + "\n";
-        });
-
-        finalText += "\n=== PAGE BREAK ===\n";
-    }
-
-    return finalText;
+  return finalText;
 }
 
 //--------------------------------------------
 // CREW EXTRACTOR
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
+  console.log("==== RAW LINES FOR DEBUG ====");
+  console.log(lines.slice(0, 60));
 
-    console.log("==== RAW LINES FOR DEBUG ====");
-    console.log(lines.slice(0, 60));
+  let flightIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
+      flightIndex = i;
+      break;
+    }
+  }
 
-    let flightIndex = -1;
-    for (let i = 0; i < lines.length; i++) {
-        if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
-            flightIndex = i;
-            break;
+  if (flightIndex === -1) {
+    console.log("❌ Flight not found");
+    return { found: false, crew: [] };
+  }
+
+  console.log("✈ Found flight at line:", flightIndex);
+
+  const crewSet = new Set();
+  const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
+
+  for (let i = flightIndex + 1; i < lines.length; i++) {
+    let line = lines[i].trim();
+
+    if (line === "") break;
+    if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
+
+    // If line begins with role + ONLY one token, try merging next line
+    if (roleStart.test(line)) {
+      const parts = line.split(" ").filter(Boolean);
+      if (parts.length === 2) {
+        const next = lines[i + 1] ? lines[i + 1].trim() : "";
+        if (/^[A-Za-zÀ-ÖØ-öø-ÿ'.-]+$/.test(next)) {
+          line = line + " " + next;
+          i++;
         }
+      }
     }
 
-    if (flightIndex === -1) {
-        console.log("❌ Flight not found");
-        return { found:false, crew:[] };
-    }
+    const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/g;
+    const matches = line.match(fullRegex);
+    if (matches) matches.forEach((m) => crewSet.add(m.trim()));
+  }
 
-    console.log("✈ Found flight at line:", flightIndex);
+  const crew = [...crewSet];
+  console.log("==== EXTRACTED CREW CLEAN ====");
+  console.log(crew);
 
-    const crewSet = new Set();
-
-    // regex to catch CP/FO block even if incomplete
-    const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
-
-    for (let i = flightIndex + 1; i < lines.length; i++) {
-
-        let line = lines[i].trim();
-
-        if (line === "") break;
-        if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
-
-        // If line begins with CP/FO/... but only role + ONE NAME
-        if (roleStart.test(line)) {
-
-            const parts = line.split(" ");
-            if (parts.length === 2) {
-                // Looks like: CP OULMANE  (missing first name)
-                const next = lines[i + 1] ? lines[i + 1].trim() : "";
-
-                // next line is probably the first name
-                if (/^[A-Za-zÀ-ÖØ-öø-ÿ'.-]+$/.test(next)) {
-                    line = line + " " + next; // merge
-                    i++; // skip next line
-                }
-            }
-        }
-
-        const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/g;
-        const matches = line.match(fullRegex);
-        if (matches) {
-            matches.forEach(m => crewSet.add(m.trim()));
-        }
-    }
-
-    const crew = [...crewSet];
-
-    console.log("==== EXTRACTED CREW CLEAN ====");
-    console.log(crew);
-
-    return { found:true, crew };
+  return { found: true, crew };
 }
 
 //--------------------------------------------
 // WRITE TO SHEET
 //--------------------------------------------
 async function writeCrewToSheet(crew) {
-    const token = await getAccessToken();
+  const token = await getAccessToken();
 
-    // Take only CP + FO
-    const pnt = crew.filter(c =>
-        c.startsWith("CP ") || c.startsWith("FO ")
-    );
+  const pnt = crew.filter((c) => c.startsWith("CP ") || c.startsWith("FO "));
+  const textBlock = pnt.join("\n");
 
-    // Join them for copy-paste effect
-    const textBlock = pnt.join("\n"); // line breaks inside ONE cell
+  const body = {
+    valueInputOption: "RAW",
+    data: [
+      {
+        range: `${SHEET_TITLE}!A8`, // ✅ A8
+        values: [[textBlock]],
+      },
+    ],
+  };
 
-    const body = {
-        valueInputOption: "RAW",
-        data: [
-            {
-                range: "Sheet1!A7",   // ONE CELL ONLY
-                values: [[textBlock]] // put whole block inside
-            }
-        ]
-    };
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
 
-    await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-        {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(body)
-        }
-    );
-
-    console.log("✅ DONE — PNT written as ONE BLOCK in A8");
+  console.log("✅ DONE — PNT written as ONE BLOCK in A8");
 }
 
-// WRITE PNC (CC + PC + FA) TO SHEET (H8)
 async function writePNCtoSheet(crew) {
-    const token = await getAccessToken();
+  const token = await getAccessToken();
 
-    // Keep CC + PC + FA only
-    const pnc = crew.filter(c =>
-        c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
-    );
+  const pnc = crew.filter(
+    (c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
+  );
 
-    const textBlock = pnc.join("\n"); // multiline block
+  const textBlock = pnc.join("\n");
 
-    const body = {
-        valueInputOption: "RAW",
-        data: [
-            {
-                range: "Sheet1!H7",   // PNC cell
-                values: [[textBlock]]
-            }
-        ]
-    };
+  const body = {
+    valueInputOption: "RAW",
+    data: [
+      {
+        range: `${SHEET_TITLE}!H8`, // ✅ H8
+        values: [[textBlock]],
+      },
+    ],
+  };
 
-    await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-        {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(body)
-        }
-    );
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
 
-    console.log("✅ DONE — PNC written as ONE BLOCK in H8");
+  console.log("✅ DONE — PNC written as ONE BLOCK in H8");
 }
-
 
 //--------------------------------------------
 // MAIN
 //--------------------------------------------
 async function processCrew() {
+  try {
     const flight = document.getElementById("flightNumber").value.trim();
     if (!flight) return alert("Enter flight number");
 
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
-    // Read PDF text
     const raw = await readPDF(file);
 
     const lines = raw
-        .split("\n")
-        .map(l => l.trim())
-        .filter(l => l.length > 0 && !l.startsWith("==="));
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // Extract crew (FO, FA, CC, etc.)
     const result = extractCrew(lines, flight);
 
-    if (!result.found) {
-        return alert("Flight not found!");
-    }
-    if (result.crew.length === 0) {
-        return alert("Flight found but NO CREW!");
-    }
+    if (!result.found) return alert("Flight not found!");
+    if (result.crew.length === 0) return alert("Flight found but NO CREW!");
 
     // ===== FIND FLIGHT ROUTE LINE =====
     let routeLine = "";
     for (let i = 0; i < lines.length; i++) {
-        if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
-            routeLine = lines[i];
-            break;
-        }
+      if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
+        routeLine = lines[i];
+        break;
+      }
     }
 
     // ===== EXTRACT CP WITH MULTI-NAME SUPPORT =====
-    // captures: CP + (ALL names) before numeric/token blocks
-    let cpMatch = routeLine.match(
-        /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
+    const cpMatch = routeLine.match(
+      /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
     );
 
     if (cpMatch) {
-        const cpFullName = "CP " + cpMatch[1].trim();
-        console.log("✔ CP detected:", cpFullName);
+      const cpFullName = "CP " + cpMatch[1].trim();
+      console.log("✔ CP detected:", cpFullName);
 
-        if (!result.crew.includes(cpFullName)) {
-            result.crew.unshift(cpFullName); // add CP at top
-        }
+      if (!result.crew.includes(cpFullName)) {
+        result.crew.unshift(cpFullName);
+      }
     } else {
-        console.log("❌ No CP detected in route line");
+      console.log("❌ No CP detected in route line");
     }
 
-    // ===== JSON DEBUG =====
-    const debugJSON = {
-        flight: flight,
-        route: routeLine,
-        crew: result.crew
-    };
-
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(JSON.stringify(debugJSON, null, 4));
+    console.log(
+      JSON.stringify(
+        { flight, route: routeLine, crew: result.crew },
+        null,
+        4
+      )
+    );
 
-    // ===== AUTO UNMERGE BEFORE WRITING =====
     await unmergeCrewAreas();
-
-    // ===== WRITE CP + FO INTO A8 =====
     await writeCrewToSheet(result.crew);
-
-    await writePNCtoSheet(result.crew);     // CC + PC + FA → H8
-
-    
+    await writePNCtoSheet(result.crew);
 
     alert("DONE! Crew imported.");
+  } catch (err) {
+    console.error("❌ PROCESS FAILED:", err);
+    alert("FAILED! Check console for details.");
+  }
 }
-
