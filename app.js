@@ -32,10 +32,25 @@ TRXiUFADYhLF0ornhpwUmQ==
 -----END PRIVATE KEY-----`;
 
 const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
-const SHEET_TITLE = "Sheet1"; // <-- change if your tab name differs
+const SHEET_TITLE = "Sheet1";
+
+// Target blocks (A8:G20) and (H8:T20) in GridRange indexing (0-based)
+const LEFT_BLOCK = {
+  startRowIndex: 7,   // row 8
+  endRowIndex: 20,    // row 20 exclusive
+  startColumnIndex: 0, // A
+  endColumnIndex: 7,   // G exclusive
+};
+
+const RIGHT_BLOCK = {
+  startRowIndex: 7,     // row 8
+  endRowIndex: 20,      // row 20 exclusive
+  startColumnIndex: 7,  // H
+  endColumnIndex: 20,   // T exclusive
+};
 
 //--------------------------------------------
-// HELPERS
+// TOKEN SYSTEM
 //--------------------------------------------
 function base64url(source) {
   const enc = btoa(String.fromCharCode.apply(null, new Uint8Array(source)));
@@ -81,11 +96,11 @@ async function generateJWT() {
 }
 
 let cachedToken = null;
-let tokenExpiry = 0;
+let tokenExpiryMs = 0;
 
 async function getAccessToken() {
   const now = Date.now();
-  if (cachedToken && now < tokenExpiry) return cachedToken;
+  if (cachedToken && now < tokenExpiryMs) return cachedToken;
 
   const jwt = await generateJWT();
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -101,13 +116,17 @@ async function getAccessToken() {
   }
 
   cachedToken = data.access_token;
-  tokenExpiry = now + 50 * 60 * 1000;
+  tokenExpiryMs = now + 50 * 60 * 1000;
   return cachedToken;
 }
 
+//--------------------------------------------
+// HTTP UTILS
+//--------------------------------------------
 async function fetchJSON(url, opts = {}) {
   const res = await fetch(url, opts);
   const text = await res.text();
+
   let data;
   try {
     data = text ? JSON.parse(text) : null;
@@ -117,14 +136,17 @@ async function fetchJSON(url, opts = {}) {
 
   if (!res.ok) {
     console.error("❌ HTTP ERROR", res.status, url, data);
-    throw new Error(
-      typeof data === "string" ? data : JSON.stringify(data, null, 2)
-    );
+    throw new Error(typeof data === "string" ? data : JSON.stringify(data, null, 2));
   }
+
   return data;
 }
 
-// ✅ IMPORTANT: Get the REAL sheetId from the spreadsheet
+//--------------------------------------------
+// SHEET HELPERS
+//--------------------------------------------
+let cachedSheetId = null;
+
 async function getSheetIdByTitle(title) {
   const token = await getAccessToken();
   const url =
@@ -142,47 +164,73 @@ async function getSheetIdByTitle(title) {
   if (!sheet) {
     throw new Error(
       `Sheet tab "${title}" not found. Existing: ` +
-        (data.sheets || []).map((s) => s.properties?.title).join(", ")
+      (data.sheets || []).map((s) => s.properties?.title).join(", ")
     );
   }
 
   return sheet.properties.sheetId;
 }
 
-//--------------------------------------------
-// AUTO-UNMERGE (FIXED)
-//--------------------------------------------
-async function unmergeCrewAreas() {
-  const token = await getAccessToken();
-  const sheetId = await getSheetIdByTitle(SHEET_TITLE);
+async function getSheetId() {
+  if (cachedSheetId) return cachedSheetId;
+  cachedSheetId = await getSheetIdByTitle(SHEET_TITLE);
+  return cachedSheetId;
+}
 
+function rangesIntersect(a, b) {
+  const ar1 = a.startRowIndex ?? 0;
+  const ar2 = a.endRowIndex ?? Infinity;
+  const ac1 = a.startColumnIndex ?? 0;
+  const ac2 = a.endColumnIndex ?? Infinity;
+
+  const br1 = b.startRowIndex ?? 0;
+  const br2 = b.endRowIndex ?? Infinity;
+  const bc1 = b.startColumnIndex ?? 0;
+  const bc2 = b.endColumnIndex ?? Infinity;
+
+  const rowsOverlap = ar1 < br2 && br1 < ar2;
+  const colsOverlap = ac1 < bc2 && bc1 < ac2;
+  return rowsOverlap && colsOverlap;
+}
+
+async function getSheetMerges(sheetId) {
+  const token = await getAccessToken();
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
+    `?fields=sheets(properties(sheetId,title),merges)`;
+
+  const data = await fetchJSON(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const sheet = (data.sheets || []).find(s => s.properties?.sheetId === sheetId);
+  return sheet?.merges || [];
+}
+
+//--------------------------------------------
+// SMART UNMERGE (FIXES 400)
+//--------------------------------------------
+async function unmergeCrewAreasSmart() {
+  const token = await getAccessToken();
+  const sheetId = await getSheetId();
+
+  const left = { sheetId, ...LEFT_BLOCK };
+  const right = { sheetId, ...RIGHT_BLOCK };
+
+  const merges = await getSheetMerges(sheetId);
+
+  const mergesToUnmerge = merges.filter(m =>
+    m.sheetId === sheetId && (rangesIntersect(m, left) || rangesIntersect(m, right))
+  );
+
+  if (mergesToUnmerge.length === 0) {
+    console.log("✅ No merges found in crew blocks (skip unmerge)");
+    return;
+  }
+
+  // Google allows multiple requests, but keep it reasonable
   const body = {
-    requests: [
-      {
-        // LEFT BLOCK — A8:G20
-        unmergeCells: {
-          range: {
-            sheetId,
-            startRowIndex: 7, // row 8 (0-based)
-            endRowIndex: 20, // row 20 (exclusive)
-            startColumnIndex: 0, // A
-            endColumnIndex: 7, // up to G (exclusive)
-          },
-        },
-      },
-      {
-        // RIGHT BLOCK — H8:T20
-        unmergeCells: {
-          range: {
-            sheetId,
-            startRowIndex: 7, // row 8
-            endRowIndex: 20, // row 20
-            startColumnIndex: 7, // H
-            endColumnIndex: 20, // up to T (exclusive)
-          },
-        },
-      },
-    ],
+    requests: mergesToUnmerge.map(m => ({ unmergeCells: { range: m } })),
   };
 
   await fetchJSON(
@@ -197,7 +245,7 @@ async function unmergeCrewAreas() {
     }
   );
 
-  console.log("✅ UNMERGE DONE (A8:G20) + (H8:T20)");
+  console.log(`✅ UNMERGE DONE: ${mergesToUnmerge.length} merged ranges cleared`);
 }
 
 //--------------------------------------------
@@ -259,10 +307,13 @@ function extractCrew(lines, flightNumber) {
   const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
 
   for (let i = flightIndex + 1; i < lines.length; i++) {
-    let line = lines[i].trim();
+    let line = (lines[i] || "").trim();
 
-    if (line === "") break;
-    if (/[A-Z]{3}\s*-\s*[A-Z]{3}\s+\d{3,5}/.test(line)) break;
+    // Stop if we hit a new flight line
+    // (This is safer than relying on layout)
+    if (i !== flightIndex && new RegExp(`\\b\\d{3,5}\\b`).test(line) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)) {
+      break;
+    }
 
     // If line begins with role + ONLY one token, try merging next line
     if (roleStart.test(line)) {
@@ -291,30 +342,21 @@ function extractCrew(lines, flightNumber) {
 //--------------------------------------------
 // WRITE TO SHEET
 //--------------------------------------------
-async function writeCrewToSheet(crew) {
+async function writePNTtoSheet(crew) {
   const token = await getAccessToken();
-
   const pnt = crew.filter((c) => c.startsWith("CP ") || c.startsWith("FO "));
   const textBlock = pnt.join("\n");
 
   const body = {
     valueInputOption: "RAW",
-    data: [
-      {
-        range: `${SHEET_TITLE}!A8`, // ✅ A8
-        values: [[textBlock]],
-      },
-    ],
+    data: [{ range: `${SHEET_TITLE}!A8`, values: [[textBlock]] }],
   };
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }
   );
@@ -324,31 +366,19 @@ async function writeCrewToSheet(crew) {
 
 async function writePNCtoSheet(crew) {
   const token = await getAccessToken();
-
-  const pnc = crew.filter(
-    (c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
-  );
-
+  const pnc = crew.filter((c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA "));
   const textBlock = pnc.join("\n");
 
   const body = {
     valueInputOption: "RAW",
-    data: [
-      {
-        range: `${SHEET_TITLE}!H8`, // ✅ H8
-        values: [[textBlock]],
-      },
-    ],
+    data: [{ range: `${SHEET_TITLE}!H8`, values: [[textBlock]] }],
   };
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }
   );
@@ -367,6 +397,7 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
+    // Read PDF text
     const raw = await readPDF(file);
 
     const lines = raw
@@ -374,12 +405,13 @@ async function processCrew() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
+    // Extract crew
     const result = extractCrew(lines, flight);
 
     if (!result.found) return alert("Flight not found!");
     if (result.crew.length === 0) return alert("Flight found but NO CREW!");
 
-    // ===== FIND FLIGHT ROUTE LINE =====
+    // Find route line (first line containing flight number)
     let routeLine = "";
     for (let i = 0; i < lines.length; i++) {
       if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
@@ -388,7 +420,7 @@ async function processCrew() {
       }
     }
 
-    // ===== EXTRACT CP WITH MULTI-NAME SUPPORT =====
+    // Extract CP from route line (multi-name)
     const cpMatch = routeLine.match(
       /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
     );
@@ -396,25 +428,20 @@ async function processCrew() {
     if (cpMatch) {
       const cpFullName = "CP " + cpMatch[1].trim();
       console.log("✔ CP detected:", cpFullName);
-
-      if (!result.crew.includes(cpFullName)) {
-        result.crew.unshift(cpFullName);
-      }
+      if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
     } else {
       console.log("❌ No CP detected in route line");
     }
 
+    // Debug JSON
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(
-      JSON.stringify(
-        { flight, route: routeLine, crew: result.crew },
-        null,
-        4
-      )
-    );
+    console.log(JSON.stringify({ flight, route: routeLine, crew: result.crew }, null, 4));
 
-    await unmergeCrewAreas();
-    await writeCrewToSheet(result.crew);
+    // Smart unmerge (fixes your 400 issue)
+    await unmergeCrewAreasSmart();
+
+    // Write blocks
+    await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
 
     alert("DONE! Crew imported.");
@@ -423,3 +450,7 @@ async function processCrew() {
     alert("FAILED! Check console for details.");
   }
 }
+
+// If you use a button in HTML like:
+// <button onclick="processCrew()">Process</button>
+// then this function is ready.
