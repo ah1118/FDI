@@ -42,8 +42,9 @@ const RIGHT_BLOCK = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 7,  e
 const ACFT_MERGED_RANGE = `${SHEET_TITLE}!D4:N6`;
 const ACFT_TOP_LEFT     = `${SHEET_TITLE}!D4`;
 
-// Date cell
-const DATE_CELL = "AB51";
+// DATE merged cell is A51:B51 (top-left is A51)
+const DATE_MERGED_RANGE = `${SHEET_TITLE}!A51:B51`;
+const DATE_TOP_LEFT     = `${SHEET_TITLE}!A51`;
 
 //--------------------------------------------
 // Opens spreadsheet
@@ -503,15 +504,26 @@ function formatTodayDate() {
 }
 
 async function writeTodayDate() {
-  // AB = 28th column, row 51
-  await ensureSheetGrid(51, 28);
-
   const token = await getAccessToken();
   const today = formatTodayDate();
 
+  // 1) clear whole merged cell (values only)
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(DATE_MERGED_RANGE)}:clear`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }
+  );
+
+  // 2) write to top-left cell of merge (A51)
   const body = {
     valueInputOption: "RAW",
-    data: [{ range: `${SHEET_TITLE}!${DATE_CELL}`, values: [[today]] }],
+    data: [{ range: DATE_TOP_LEFT, values: [[today]] }],
   };
 
   const res = await fetchJSON(
@@ -526,7 +538,7 @@ async function writeTodayDate() {
     }
   );
 
-  console.log(`✅ Date written to ${DATE_CELL}:`, today, res);
+  console.log(`✅ Date written to ${DATE_TOP_LEFT}:`, today, res);
 }
 
 //--------------------------------------------
