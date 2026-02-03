@@ -355,39 +355,51 @@ async function writePNCtoSheet(crew) {
 async function writeAircraftReg(acftReg) {
   const token = await getAccessToken();
 
-  const range1 = `${SHEET_TITLE}!${PREVU_CELL}`;
-  const range2 = `${SHEET_TITLE}!${REEL_CELL}`;
+  // The merged block you mentioned
+  const mergedRange = `${SHEET_TITLE}!D4:N6`;
 
+  // 1) CLEAR the whole merged range (D4:N6)
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(mergedRange)}:clear`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}), // required by some environments
+    }
+  );
+
+  // 2) Build text exactly from your template:
+  //    PREVU:123456---------------------REEL:123456
+  //    then replace 123456 -> acftReg, and dashes -> spaces
+  const template = "PREVU:123456---------------------REEL:123456";
+  const newText = template
+    .replaceAll("123456", acftReg)
+    .replaceAll(/-+/g, "   "); // replace any run of dashes with spaces
+
+  // IMPORTANT: write to top-left cell of the merge (D4)
   const body = {
     valueInputOption: "RAW",
-    data: [
-      { range: range1, values: [[`PREVU:${acftReg}`]] },
-      { range: range2, values: [[`REEL:${acftReg}`]] },
-    ],
+    data: [{ range: `${SHEET_TITLE}!D4`, values: [[newText]] }],
   };
 
   const writeRes = await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
     }
   );
 
-  console.log("✅ Aircraft REG write response:", writeRes);
-
-  const readUrl =
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchGet` +
-    `?ranges=${encodeURIComponent(range1)}` +
-    `&ranges=${encodeURIComponent(range2)}`;
-
-  const readRes = await fetchJSON(readUrl, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  console.log("🔎 Read-back PREVU/REEL:", readRes);
-} // ✅ IMPORTANT: this closing brace was missing in your paste
+  console.log("✅ PREVU/REEL merged cell updated:", writeRes, "TEXT:", newText);
+}
+// ✅ IMPORTANT: this closing brace was missing in your paste
 
 //--------------------------------------------
 // MAIN
