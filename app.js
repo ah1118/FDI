@@ -46,6 +46,9 @@ const ACFT_TOP_LEFT     = `${SHEET_TITLE}!D4`;
 const DATE_MERGED_RANGE = `${SHEET_TITLE}!A51:B51`;
 const DATE_TOP_LEFT     = `${SHEET_TITLE}!A51`;
 
+// ETD target cell
+const ETD_CELL = `${SHEET_TITLE}!E51`;
+
 //--------------------------------------------
 // Opens spreadsheet
 //--------------------------------------------
@@ -541,6 +544,38 @@ async function writeTodayDate() {
   console.log(`✅ Date written to ${DATE_TOP_LEFT}:`, today, res);
 }
 
+// Extract ETD from route line (first HH:MM found)
+function extractETDFromRoute(routeLine) {
+  if (!routeLine) return null;
+  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g); // all HH:MM
+  return times && times.length ? times[0] : null; // first time = ETD
+}
+
+// Write ETD to E51
+async function writeETDToSheet(etd) {
+  const token = await getAccessToken();
+  if (!etd) throw new Error("ETD is empty (not found)");
+
+  const body = {
+    valueInputOption: "RAW",
+    data: [{ range: ETD_CELL, values: [[etd]] }],
+  };
+
+  const res = await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+
+  console.log(`✅ ETD written to ${ETD_CELL}:`, etd, res);
+}
+
+
+
+
 //--------------------------------------------
 // MAIN
 //--------------------------------------------
@@ -573,6 +608,11 @@ async function processCrew() {
     }
     if (!routeLine) return alert("Route line not found in PDF!");
 
+    // ✅ ETD (first HH:MM in route line)
+    const etd = extractETDFromRoute(routeLine);
+    if (!etd) return alert("ETD not found in route line!");
+    console.log("🕒 ETD detected:", etd);
+
     // ACFT REG (accept 7TVKL / 7T VKL / 7T-VKL)
     const reg = extractAcftRegFromRoute(routeLine);
     if (!reg) return alert("Aircraft registration not found in route line!");
@@ -588,7 +628,13 @@ async function processCrew() {
     }
 
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(JSON.stringify({ flight, route: routeLine, acftReg: reg, crew: result.crew }, null, 4));
+    console.log(
+      JSON.stringify(
+        { flight, route: routeLine, acftReg: reg, etd, crew: result.crew },
+        null,
+        4
+      )
+    );
 
     await unmergeCrewAreasSmart();
     await writePNTtoSheet(result.crew);
@@ -596,10 +642,16 @@ async function processCrew() {
     await writeAircraftReg(reg);
     await writeTodayDate();
 
+    // ✅ write ETD to E51
+    await writeETDToSheet(etd);
+
     window.open(getSheetUrl(), "_blank");
-    alert(`DONE! Crew imported. ACFT REG: ${normalizeAcftReg(reg)}`);
+    alert(
+      `DONE! Crew imported. ACFT REG: ${normalizeAcftReg(reg)} | ETD: ${etd}`
+    );
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
+
