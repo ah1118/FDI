@@ -454,6 +454,7 @@ async function processCrew() {
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(acftReg);
+    await writeTodayDate();
 
     window.open(getSheetUrl(), "_blank");
     alert(`DONE! Crew imported. ACFT REG: ${acftReg}`);
@@ -467,12 +468,19 @@ async function processCrew() {
 const DATE_CELL = "AB51"; // <-- your target cell
 
 function formatTodayDate() {
-  // Format like 03/02/2026 (French style)
   const d = new Date();
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
+
+  const day = String(d.getDate()).padStart(2, "0");
+
+  const months = [
+    "Jan","Feb","Mar","Apr","May","Jun",
+    "Jul","Aug","Sep","Oct","Nov","Dec"
+  ];
+
+  const month = months[d.getMonth()];
+  const year = d.getFullYear();
+
+  return `${day}${month}${year}`;
 }
 
 async function writeTodayDate() {
