@@ -35,8 +35,8 @@ const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
 const SHEET_TITLE = "Sheet1";
 
 // Cells that contain PREVU:123456 and REEL:123456 (merged regions start here)
-const PREVU_CELL = "D5";
-const REEL_CELL  = "F5";
+const PREVU_CELL = "D4";
+const REEL_CELL  = "F4";
 
 //--------------------------------------------
 // Opens spreadsheet
