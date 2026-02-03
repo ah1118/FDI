@@ -396,6 +396,36 @@ async function writePNCtoSheet(crew) {
   console.log("✅ DONE — PNC written as ONE BLOCK in H8");
 }
 
+const PREVU_CELL = "D5"; // <-- change if needed
+const REEL_CELL  = "F5"; // <-- change if needed
+
+async function writeAircraftReg(acftReg) {
+  const token = await getAccessToken();
+
+  const body = {
+    valueInputOption: "RAW",
+    data: [
+      { range: `${SHEET_TITLE}!${PREVU_CELL}`, values: [[`PREVU:${acftReg}`]] },
+      { range: `${SHEET_TITLE}!${REEL_CELL}`,  values: [[`REEL:${acftReg}`]] },
+    ],
+  };
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  console.log("✅ Aircraft REG written in PREVU and REEL");
+}
+
+
 //--------------------------------------------
 // MAIN
 //--------------------------------------------
@@ -430,6 +460,20 @@ async function processCrew() {
       }
     }
 
+    if (!routeLine) {
+      console.log("❌ Route line not found");
+      return alert("Route line not found in PDF!");
+    }
+
+    // ✅ Extract ACFT registration (ex: 7T-VKL) from route line
+    const regMatch = routeLine.match(/\b[A-Z0-9]{2}-[A-Z0-9]{3}\b/);
+    if (!regMatch) {
+      console.log("❌ No aircraft registration found in route line:", routeLine);
+      return alert("Aircraft registration not found in route line!");
+    }
+    const acftReg = regMatch[0];
+    console.log("✈ ACFT REG detected:", acftReg);
+
     // Extract CP from route line (multi-name)
     const cpMatch = routeLine.match(
       /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
@@ -445,24 +489,34 @@ async function processCrew() {
 
     // Debug JSON
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(JSON.stringify({ flight, route: routeLine, crew: result.crew }, null, 4));
+    console.log(
+      JSON.stringify(
+        { flight, route: routeLine, acftReg, crew: result.crew },
+        null,
+        4
+      )
+    );
 
     // ✅ Safe unmerge that won't touch row 7
     await unmergeCrewAreasSmart();
 
-    // Write blocks (still A8 and H8)
+    // ✅ Write crew blocks
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
+
+    // ✅ Write ACFT REG into PREVU/REEL cells
+    await writeAircraftReg(acftReg);
 
     // Open the sheet AFTER writing (popup blocker may block)
     window.open(getSheetUrl(), "_blank");
 
-    alert("DONE! Crew imported.");
+    alert(`DONE! Crew imported. ACFT REG: ${acftReg}`);
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
+
 
 // If you use a button in HTML like:
 // <button onclick="processCrew()">Process</button>
