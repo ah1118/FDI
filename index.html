@@ -1,15 +1,15 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Flight Crew Import</title>
-    <link rel="stylesheet" href="style.css">
+  <title>Flight Crew Import</title>
+  <link rel="stylesheet" href="style.css">
 
-    <!-- PDF.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <!-- PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 </head>
 <body>
 
-<div class="container">
+  <div class="container">
     <h2>Import Crew</h2>
 
     <label>Flight Number</label>
@@ -19,8 +19,12 @@
     <input id="pdfFile" type="file" accept="application/pdf">
 
     <button onclick="processCrew()">Process</button>
-</div>
+  </div>
 
-<script src="app.js"></script>
+  <!-- ✅ Add this -->
+  <script src="flightdata.js"></script>
+
+  <!-- Keep this -->
+  <script src="app.js"></script>
 </body>
 </html>
