@@ -182,22 +182,6 @@ async function getSheetId() {
   return cachedSheetId;
 }
 
-function rangesIntersect(a, b) {
-  const ar1 = a.startRowIndex ?? 0;
-  const ar2 = a.endRowIndex ?? Infinity;
-  const ac1 = a.startColumnIndex ?? 0;
-  const ac2 = a.endColumnIndex ?? Infinity;
-
-  const br1 = b.startRowIndex ?? 0;
-  const br2 = b.endRowIndex ?? Infinity;
-  const bc1 = b.startColumnIndex ?? 0;
-  const bc2 = b.endColumnIndex ?? Infinity;
-
-  const rowsOverlap = ar1 < br2 && br1 < ar2;
-  const colsOverlap = ac1 < bc2 && bc1 < ac2;
-  return rowsOverlap && colsOverlap;
-}
-
 async function getSheetMerges(sheetId) {
   const token = await getAccessToken();
   const url =
@@ -213,8 +197,24 @@ async function getSheetMerges(sheetId) {
 }
 
 //--------------------------------------------
-// SMART UNMERGE (FIXES 400)
+// SMART UNMERGE (SAFE: WON'T TOUCH ROW 7)
 //--------------------------------------------
+// We only unmerge merges that are FULLY inside the crew blocks (A8:G20 and H8:T20).
+// If a merge touches row 7 (headers), we skip it so row 7 stays exactly as-is.
+function isFullyInside(inner, outer) {
+  const ir1 = inner.startRowIndex ?? 0;
+  const ir2 = inner.endRowIndex ?? Infinity;
+  const ic1 = inner.startColumnIndex ?? 0;
+  const ic2 = inner.endColumnIndex ?? Infinity;
+
+  const or1 = outer.startRowIndex ?? 0;
+  const or2 = outer.endRowIndex ?? Infinity;
+  const oc1 = outer.startColumnIndex ?? 0;
+  const oc2 = outer.endColumnIndex ?? Infinity;
+
+  return ir1 >= or1 && ir2 <= or2 && ic1 >= oc1 && ic2 <= oc2;
+}
+
 async function unmergeCrewAreasSmart() {
   const token = await getAccessToken();
   const sheetId = await getSheetId();
@@ -224,12 +224,13 @@ async function unmergeCrewAreasSmart() {
 
   const merges = await getSheetMerges(sheetId);
 
+  // ✅ Only unmerge merges that are fully inside A8:G20 or H8:T20
   const mergesToUnmerge = merges.filter(
-    (m) => m.sheetId === sheetId && (rangesIntersect(m, left) || rangesIntersect(m, right))
+    (m) => m.sheetId === sheetId && (isFullyInside(m, left) || isFullyInside(m, right))
   );
 
   if (mergesToUnmerge.length === 0) {
-    console.log("✅ No merges found in crew blocks (skip unmerge)");
+    console.log("✅ No safe merges found in crew blocks (skip unmerge)");
     return;
   }
 
@@ -249,7 +250,7 @@ async function unmergeCrewAreasSmart() {
     }
   );
 
-  console.log(`✅ UNMERGE DONE: ${mergesToUnmerge.length} merged ranges cleared`);
+  console.log(`✅ UNMERGE DONE (SAFE): ${mergesToUnmerge.length} merged ranges cleared`);
 }
 
 //--------------------------------------------
@@ -446,14 +447,14 @@ async function processCrew() {
     console.log("===== FLIGHT JSON DEBUG =====");
     console.log(JSON.stringify({ flight, route: routeLine, crew: result.crew }, null, 4));
 
-    // Smart unmerge (fixes your 400 issue)
+    // ✅ Safe unmerge that won't touch row 7
     await unmergeCrewAreasSmart();
 
-    // Write blocks
+    // Write blocks (still A8 and H8)
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
 
-    // ✅ Open the sheet AFTER writing (you accept popup blocker risk)
+    // Open the sheet AFTER writing (popup blocker may block)
     window.open(getSheetUrl(), "_blank");
 
     alert("DONE! Crew imported.");
