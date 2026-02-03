@@ -352,40 +352,33 @@ async function writePNCtoSheet(crew) {
 //--------------------------------------------
 // WRITE AIRCRAFT REG + VERIFY
 //--------------------------------------------
-async function writeAircraftReg(acftReg) {
+async function writeAircraftReg(acftRegRaw) {
   const token = await getAccessToken();
 
-  // The merged block you mentioned
-  const mergedRange = `${SHEET_TITLE}!D4:N6`;
+  // ✅ normalize: "7TVKL" / "7T VKL" / "7T-VKL"  ->  "7T-VKL"
+  const cleaned = (acftRegRaw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (cleaned.length < 5) {
+    console.log("❌ Invalid ACFT REG (too short):", acftRegRaw);
+    throw new Error("Invalid aircraft registration");
+  }
+  const acftReg = `${cleaned.slice(0, 2)}-${cleaned.slice(2, 5)}`;
 
-  // 1) CLEAR the whole merged range (D4:N6)
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(mergedRange)}:clear`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({}), // required by some environments
-    }
-  );
-
-  // 2) Build text exactly from your template:
-  //    PREVU:123456---------------------REEL:123456
-  //    then replace 123456 -> acftReg, and dashes -> spaces
+  // ✅ your exact template + exact spaces count
   const template = "PREVU:123456---------------------REEL:123456";
+  const sep = "---------------------";            // 21 dashes
+  const sepSpaces = " ".repeat(sep.length);   // 21 spaces (same count)
+
   const newText = template
     .replaceAll("123456", acftReg)
-    .replaceAll(/-+/g, "   "); // replace any run of dashes with spaces
+    .replace(sep, sepSpaces);
 
-  // IMPORTANT: write to top-left cell of the merge (D4)
+  // ✅ write ONLY to merged top-left (D4) so formatting stays (no grey)
   const body = {
     valueInputOption: "RAW",
     data: [{ range: `${SHEET_TITLE}!D4`, values: [[newText]] }],
   };
 
-  const writeRes = await fetchJSON(
+  const res = await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
@@ -397,8 +390,9 @@ async function writeAircraftReg(acftReg) {
     }
   );
 
-  console.log("✅ PREVU/REEL merged cell updated:", writeRes, "TEXT:", newText);
+  console.log("✅ PREVU/REEL updated:", res, "TEXT:", newText);
 }
+
 // ✅ IMPORTANT: this closing brace was missing in your paste
 
 //--------------------------------------------
