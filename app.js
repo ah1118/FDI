@@ -352,33 +352,40 @@ async function writePNCtoSheet(crew) {
 //--------------------------------------------
 // WRITE AIRCRAFT REG + VERIFY
 //--------------------------------------------
-async function writeAircraftReg(acftRegRaw) {
+async function writeAircraftReg(acftReg) {
   const token = await getAccessToken();
 
-  // ✅ normalize: "7TVKL" / "7T VKL" / "7T-VKL"  ->  "7T-VKL"
-  const cleaned = (acftRegRaw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (cleaned.length < 5) {
-    console.log("❌ Invalid ACFT REG (too short):", acftRegRaw);
-    throw new Error("Invalid aircraft registration");
-  }
-  const acftReg = `${cleaned.slice(0, 2)}-${cleaned.slice(2, 5)}`;
+  // The merged block you mentioned
+  const mergedRange = `${SHEET_TITLE}!D4:N6`;
 
-  // ✅ your exact template + exact spaces count
+  // 1) CLEAR the whole merged range (D4:N6)
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(mergedRange)}:clear`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}), // required by some environments
+    }
+  );
+
+  // 2) Build text exactly from your template:
+  //    PREVU:123456---------------------REEL:123456
+  //    then replace 123456 -> acftReg, and dashes -> spaces
   const template = "PREVU:123456---------------------REEL:123456";
-  const sep = "---------------------";            // 21 dashes
-  const sepSpaces = " ".repeat(sep.length);   // 21 spaces (same count)
-
   const newText = template
     .replaceAll("123456", acftReg)
-    .replace(sep, sepSpaces);
+    .replaceAll(/-+/g, "   "); // replace any run of dashes with spaces
 
-  // ✅ write ONLY to merged top-left (D4) so formatting stays (no grey)
+  // IMPORTANT: write to top-left cell of the merge (D4)
   const body = {
     valueInputOption: "RAW",
     data: [{ range: `${SHEET_TITLE}!D4`, values: [[newText]] }],
   };
 
-  const res = await fetchJSON(
+  const writeRes = await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
@@ -390,9 +397,8 @@ async function writeAircraftReg(acftRegRaw) {
     }
   );
 
-  console.log("✅ PREVU/REEL updated:", res, "TEXT:", newText);
+  console.log("✅ PREVU/REEL merged cell updated:", writeRes, "TEXT:", newText);
 }
-
 // ✅ IMPORTANT: this closing brace was missing in your paste
 
 //--------------------------------------------
@@ -455,4 +461,40 @@ async function processCrew() {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
+}
+
+
+const DATE_CELL = "AB51"; // <-- your target cell
+
+function formatTodayDate() {
+  // Format like 03/02/2026 (French style)
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+async function writeTodayDate() {
+  const token = await getAccessToken();
+  const today = formatTodayDate();
+
+  const body = {
+    valueInputOption: "RAW",
+    data: [{ range: `${SHEET_TITLE}!${DATE_CELL}`, values: [[today]] }],
+  };
+
+  const res = await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  console.log(`✅ Date written to ${DATE_CELL}:`, today, res);
 }
