@@ -34,25 +34,20 @@ TRXiUFADYhLF0ornhpwUmQ==
 const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
 const SHEET_TITLE = "Sheet1";
 
-// Opens spreadsheet (default gid=0). Adjust gid if you want a specific tab.
+// Cells that contain PREVU:123456 and REEL:123456 (merged regions start here)
+const PREVU_CELL = "D5";
+const REEL_CELL  = "F5";
+
+//--------------------------------------------
+// Opens spreadsheet
+//--------------------------------------------
 function getSheetUrl() {
   return `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`;
 }
 
 // Target blocks (A8:G20) and (H8:T20) in GridRange indexing (0-based)
-const LEFT_BLOCK = {
-  startRowIndex: 7,    // row 8
-  endRowIndex: 20,     // row 20 exclusive
-  startColumnIndex: 0, // A
-  endColumnIndex: 7,   // G exclusive
-};
-
-const RIGHT_BLOCK = {
-  startRowIndex: 7,     // row 8
-  endRowIndex: 20,      // row 20 exclusive
-  startColumnIndex: 7,  // H
-  endColumnIndex: 20,   // T exclusive
-};
+const LEFT_BLOCK = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 0, endColumnIndex: 7 };
+const RIGHT_BLOCK = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 7, endColumnIndex: 20 };
 
 //--------------------------------------------
 // TOKEN SYSTEM
@@ -199,8 +194,6 @@ async function getSheetMerges(sheetId) {
 //--------------------------------------------
 // SMART UNMERGE (SAFE: WON'T TOUCH ROW 7)
 //--------------------------------------------
-// We only unmerge merges that are FULLY inside the crew blocks (A8:G20 and H8:T20).
-// If a merge touches row 7 (headers), we skip it so row 7 stays exactly as-is.
 function isFullyInside(inner, outer) {
   const ir1 = inner.startRowIndex ?? 0;
   const ir2 = inner.endRowIndex ?? Infinity;
@@ -224,7 +217,6 @@ async function unmergeCrewAreasSmart() {
 
   const merges = await getSheetMerges(sheetId);
 
-  // ✅ Only unmerge merges that are fully inside A8:G20 or H8:T20
   const mergesToUnmerge = merges.filter(
     (m) => m.sheetId === sheetId && (isFullyInside(m, left) || isFullyInside(m, right))
   );
@@ -234,18 +226,13 @@ async function unmergeCrewAreasSmart() {
     return;
   }
 
-  const body = {
-    requests: mergesToUnmerge.map((m) => ({ unmergeCells: { range: m } })),
-  };
+  const body = { requests: mergesToUnmerge.map((m) => ({ unmergeCells: { range: m } })) };
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }
   );
@@ -290,9 +277,6 @@ async function readPDF(file) {
 // CREW EXTRACTOR
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
-  console.log("==== RAW LINES FOR DEBUG ====");
-  console.log(lines.slice(0, 60));
-
   let flightIndex = -1;
   for (let i = 0; i < lines.length; i++) {
     if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
@@ -301,12 +285,7 @@ function extractCrew(lines, flightNumber) {
     }
   }
 
-  if (flightIndex === -1) {
-    console.log("❌ Flight not found");
-    return { found: false, crew: [] };
-  }
-
-  console.log("✈ Found flight at line:", flightIndex);
+  if (flightIndex === -1) return { found: false, crew: [] };
 
   const crewSet = new Set();
   const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
@@ -314,16 +293,8 @@ function extractCrew(lines, flightNumber) {
   for (let i = flightIndex + 1; i < lines.length; i++) {
     let line = (lines[i] || "").trim();
 
-    // Stop if we hit a new flight line
-    if (
-      i !== flightIndex &&
-      /\b\d{3,5}\b/.test(line) &&
-      /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)
-    ) {
-      break;
-    }
+    if (i !== flightIndex && /\b\d{3,5}\b/.test(line) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)) break;
 
-    // If line begins with role + ONLY one token, try merging next line
     if (roleStart.test(line)) {
       const parts = line.split(" ").filter(Boolean);
       if (parts.length === 2) {
@@ -340,15 +311,11 @@ function extractCrew(lines, flightNumber) {
     if (matches) matches.forEach((m) => crewSet.add(m.trim()));
   }
 
-  const crew = [...crewSet];
-  console.log("==== EXTRACTED CREW CLEAN ====");
-  console.log(crew);
-
-  return { found: true, crew };
+  return { found: true, crew: [...crewSet] };
 }
 
 //--------------------------------------------
-// WRITE TO SHEET
+// WRITE CREW
 //--------------------------------------------
 async function writePNTtoSheet(crew) {
   const token = await getAccessToken();
@@ -362,21 +329,13 @@ async function writePNTtoSheet(crew) {
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
+    { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }
   );
-
-  console.log("✅ DONE — PNT written as ONE BLOCK in A8");
 }
 
 async function writePNCtoSheet(crew) {
   const token = await getAccessToken();
-  const pnc = crew.filter(
-    (c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
-  );
+  const pnc = crew.filter((c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA "));
   const textBlock = pnc.join("\n");
 
   const body = {
@@ -386,6 +345,29 @@ async function writePNCtoSheet(crew) {
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }
+  );
+}
+
+//--------------------------------------------
+// WRITE AIRCRAFT REG + VERIFY
+//--------------------------------------------
+async function writeAircraftReg(acftReg) {
+  const token = await getAccessToken();
+
+  const range1 = `${SHEET_TITLE}!${PREVU_CELL}`;
+  const range2 = `${SHEET_TITLE}!${REEL_CELL}`;
+
+  const body = {
+    valueInputOption: "RAW",
+    data: [
+      { range: range1, values: [[`PREVU:${acftReg}`]] },
+      { range: range2, values: [[`REEL:${acftReg}`]] },
+    ],
+  };
+
+  const writeRes = await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -393,38 +375,19 @@ async function writePNCtoSheet(crew) {
     }
   );
 
-  console.log("✅ DONE — PNC written as ONE BLOCK in H8");
-}
+  console.log("✅ Aircraft REG write response:", writeRes);
 
-const PREVU_CELL = "D5"; // <-- change if needed
-const REEL_CELL  = "F5"; // <-- change if needed
+  const readUrl =
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchGet` +
+    `?ranges=${encodeURIComponent(range1)}` +
+    `&ranges=${encodeURIComponent(range2)}`;
 
-async function writeAircraftReg(acftReg) {
-  const token = await getAccessToken();
+  const readRes = await fetchJSON(readUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 
-  const body = {
-    valueInputOption: "RAW",
-    data: [
-      { range: `${SHEET_TITLE}!${PREVU_CELL}`, values: [[`PREVU:${acftReg}`]] },
-      { range: `${SHEET_TITLE}!${REEL_CELL}`,  values: [[`REEL:${acftReg}`]] },
-    ],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }
-  );
-
-  console.log("✅ Aircraft REG written in PREVU and REEL");
-}
-
+  console.log("🔎 Read-back PREVU/REEL:", readRes);
+} // ✅ IMPORTANT: this closing brace was missing in your paste
 
 //--------------------------------------------
 // MAIN
@@ -437,7 +400,6 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
-    // Read PDF text
     const raw = await readPDF(file);
 
     const lines = raw
@@ -445,13 +407,10 @@ async function processCrew() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // Extract crew
     const result = extractCrew(lines, flight);
-
     if (!result.found) return alert("Flight not found!");
     if (result.crew.length === 0) return alert("Flight found but NO CREW!");
 
-    // Find route line (first line containing flight number)
     let routeLine = "";
     for (let i = 0; i < lines.length; i++) {
       if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
@@ -459,65 +418,35 @@ async function processCrew() {
         break;
       }
     }
+    if (!routeLine) return alert("Route line not found in PDF!");
 
-    if (!routeLine) {
-      console.log("❌ Route line not found");
-      return alert("Route line not found in PDF!");
-    }
-
-    // ✅ Extract ACFT registration (ex: 7T-VKL) from route line
+    // ACFT REG
     const regMatch = routeLine.match(/\b[A-Z0-9]{2}-[A-Z0-9]{3}\b/);
-    if (!regMatch) {
-      console.log("❌ No aircraft registration found in route line:", routeLine);
-      return alert("Aircraft registration not found in route line!");
-    }
+    if (!regMatch) return alert("Aircraft registration not found in route line!");
     const acftReg = regMatch[0];
     console.log("✈ ACFT REG detected:", acftReg);
 
-    // Extract CP from route line (multi-name)
+    // Captain from route line
     const cpMatch = routeLine.match(
       /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
     );
-
     if (cpMatch) {
       const cpFullName = "CP " + cpMatch[1].trim();
-      console.log("✔ CP detected:", cpFullName);
       if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
-    } else {
-      console.log("❌ No CP detected in route line");
     }
 
-    // Debug JSON
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(
-      JSON.stringify(
-        { flight, route: routeLine, acftReg, crew: result.crew },
-        null,
-        4
-      )
-    );
+    console.log(JSON.stringify({ flight, route: routeLine, acftReg, crew: result.crew }, null, 4));
 
-    // ✅ Safe unmerge that won't touch row 7
     await unmergeCrewAreasSmart();
-
-    // ✅ Write crew blocks
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
-
-    // ✅ Write ACFT REG into PREVU/REEL cells
     await writeAircraftReg(acftReg);
 
-    // Open the sheet AFTER writing (popup blocker may block)
     window.open(getSheetUrl(), "_blank");
-
     alert(`DONE! Crew imported. ACFT REG: ${acftReg}`);
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
-
-
-// If you use a button in HTML like:
-// <button onclick="processCrew()">Process</button>
-// then this function is ready.
