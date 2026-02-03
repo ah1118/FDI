@@ -34,9 +34,16 @@ TRXiUFADYhLF0ornhpwUmQ==
 const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
 const SHEET_TITLE = "Sheet1";
 
-// Cells that contain PREVU:123456 and REEL:123456 (merged regions start here)
-const PREVU_CELL = "D4";
-const REEL_CELL  = "F4";
+// Crew blocks (A8:G20) and (H8:T20) in GridRange indexing (0-based)
+const LEFT_BLOCK  = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 0,  endColumnIndex: 7  };
+const RIGHT_BLOCK = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 7,  endColumnIndex: 20 };
+
+// ACFT merged cell block (top-left is D4)
+const ACFT_MERGED_RANGE = `${SHEET_TITLE}!D4:N6`;
+const ACFT_TOP_LEFT     = `${SHEET_TITLE}!D4`;
+
+// Date cell
+const DATE_CELL = "AB51";
 
 //--------------------------------------------
 // Opens spreadsheet
@@ -44,10 +51,6 @@ const REEL_CELL  = "F4";
 function getSheetUrl() {
   return `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`;
 }
-
-// Target blocks (A8:G20) and (H8:T20) in GridRange indexing (0-based)
-const LEFT_BLOCK = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 0, endColumnIndex: 7 };
-const RIGHT_BLOCK = { startRowIndex: 7, endRowIndex: 20, startColumnIndex: 7, endColumnIndex: 20 };
 
 //--------------------------------------------
 // TOKEN SYSTEM
@@ -143,7 +146,7 @@ async function fetchJSON(url, opts = {}) {
 }
 
 //--------------------------------------------
-// SHEET HELPERS
+// SHEET HELPERS (for unmerge only)
 //--------------------------------------------
 let cachedSheetId = null;
 
@@ -157,17 +160,13 @@ async function getSheetIdByTitle(title) {
     headers: { Authorization: `Bearer ${token}` },
   });
 
-  const sheet = (data.sheets || []).find(
-    (s) => s.properties && s.properties.title === title
-  );
-
+  const sheet = (data.sheets || []).find((s) => s.properties && s.properties.title === title);
   if (!sheet) {
     throw new Error(
       `Sheet tab "${title}" not found. Existing: ` +
       (data.sheets || []).map((s) => s.properties?.title).join(", ")
     );
   }
-
   return sheet.properties.sheetId;
 }
 
@@ -284,7 +283,6 @@ function extractCrew(lines, flightNumber) {
       break;
     }
   }
-
   if (flightIndex === -1) return { found: false, crew: [] };
 
   const crewSet = new Set();
@@ -293,8 +291,10 @@ function extractCrew(lines, flightNumber) {
   for (let i = flightIndex + 1; i < lines.length; i++) {
     let line = (lines[i] || "").trim();
 
+    // Stop on next flight line
     if (i !== flightIndex && /\b\d{3,5}\b/.test(line) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)) break;
 
+    // Merge broken names
     if (roleStart.test(line)) {
       const parts = line.split(" ").filter(Boolean);
       if (parts.length === 2) {
@@ -329,7 +329,11 @@ async function writePNTtoSheet(crew) {
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
   );
 }
 
@@ -345,44 +349,76 @@ async function writePNCtoSheet(crew) {
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
   );
 }
 
 //--------------------------------------------
-// WRITE AIRCRAFT REG + VERIFY
+// ACFT REG NORMALIZATION
+//  - input: "7TVKL" or "7T VKL" or "7T-VKL" -> output: "7T-VKL"
 //--------------------------------------------
-async function writeAircraftReg(acftReg) {
+function normalizeAcftReg(raw) {
+  if (!raw) return "";
+  const s = String(raw).toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
+  // Expect 5 chars like 7TVKL
+  if (s.length >= 5) {
+    const a = s.slice(0, 2);
+    const b = s.slice(2, 5);
+    return `${a}-${b}`;
+  }
+  return raw.toUpperCase();
+}
+
+// Extract reg from route line in ANY of these forms:
+// 7TVKL, 7T VKL, 7T-VKL
+function extractAcftRegFromRoute(routeLine) {
+  const m = routeLine.toUpperCase().match(/\b([A-Z0-9]{2})[-\s]?([A-Z0-9]{3})\b/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}`;
+}
+
+//--------------------------------------------
+// WRITE AIRCRAFT REG (CLEAR D4:N6 then write ONE LINE into D4)
+//  - uses your exact template
+//  - replaces 123456 -> reg
+//  - replaces "---------------------" with SAME COUNT spaces
+//--------------------------------------------
+async function writeAircraftReg(acftRegRaw) {
   const token = await getAccessToken();
 
-  // The merged block you mentioned
-  const mergedRange = `${SHEET_TITLE}!D4:N6`;
+  const acftReg = normalizeAcftReg(acftRegRaw);
 
-  // 1) CLEAR the whole merged range (D4:N6)
+  // 1) CLEAR values in merged range D4:N6 (does NOT remove formatting)
   await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(mergedRange)}:clear`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(ACFT_MERGED_RANGE)}:clear`,
     {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}), // required by some environments
+      body: JSON.stringify({}),
     }
   );
 
-  // 2) Build text exactly from your template:
-  //    PREVU:123456---------------------REEL:123456
-  //    then replace 123456 -> acftReg, and dashes -> spaces
+  // 2) Build text exactly like your requested template
   const template = "PREVU:123456---------------------REEL:123456";
-  const newText = template
-    .replaceAll("123456", acftReg)
-    .replaceAll(/-+/g, "   "); // replace any run of dashes with spaces
 
-  // IMPORTANT: write to top-left cell of the merge (D4)
+  const dashRun = (template.match(/-+/) || [""])[0]; // "---------------------"
+  const gapSpaces = " ".repeat(dashRun.length);      // same number of spaces
+
+  const newText = template
+    .split("123456").join(acftReg)  // replace both 123456
+    .replace(dashRun, gapSpaces);   // replace dash run with spaces (same count)
+
+  // 3) Write ONLY to top-left cell of merged range (D4)
   const body = {
     valueInputOption: "RAW",
-    data: [{ range: `${SHEET_TITLE}!D4`, values: [[newText]] }],
+    data: [{ range: ACFT_TOP_LEFT, values: [[newText]] }],
   };
 
   const writeRes = await fetchJSON(
@@ -397,89 +433,18 @@ async function writeAircraftReg(acftReg) {
     }
   );
 
-  console.log("✅ PREVU/REEL merged cell updated:", writeRes, "TEXT:", newText);
-}
-// ✅ IMPORTANT: this closing brace was missing in your paste
-
-//--------------------------------------------
-// MAIN
-//--------------------------------------------
-async function processCrew() {
-  try {
-    const flight = document.getElementById("flightNumber").value.trim();
-    if (!flight) return alert("Enter flight number");
-
-    const file = document.getElementById("pdfFile").files[0];
-    if (!file) return alert("Upload a PDF");
-
-    const raw = await readPDF(file);
-
-    const lines = raw
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("==="));
-
-    const result = extractCrew(lines, flight);
-    if (!result.found) return alert("Flight not found!");
-    if (result.crew.length === 0) return alert("Flight found but NO CREW!");
-
-    let routeLine = "";
-    for (let i = 0; i < lines.length; i++) {
-      if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
-        routeLine = lines[i];
-        break;
-      }
-    }
-    if (!routeLine) return alert("Route line not found in PDF!");
-
-    // ACFT REG
-    const regMatch = routeLine.match(/\b[A-Z0-9]{2}-[A-Z0-9]{3}\b/);
-    if (!regMatch) return alert("Aircraft registration not found in route line!");
-    const acftReg = regMatch[0];
-    console.log("✈ ACFT REG detected:", acftReg);
-
-    // Captain from route line
-    const cpMatch = routeLine.match(
-      /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
-    );
-    if (cpMatch) {
-      const cpFullName = "CP " + cpMatch[1].trim();
-      if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
-    }
-
-    console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(JSON.stringify({ flight, route: routeLine, acftReg, crew: result.crew }, null, 4));
-
-    await unmergeCrewAreasSmart();
-    await writePNTtoSheet(result.crew);
-    await writePNCtoSheet(result.crew);
-    await writeAircraftReg(acftReg);
-    await writeTodayDate();
-
-    window.open(getSheetUrl(), "_blank");
-    alert(`DONE! Crew imported. ACFT REG: ${acftReg}`);
-  } catch (err) {
-    console.error("❌ PROCESS FAILED:", err);
-    alert("FAILED! Check console for details.");
-  }
+  console.log("✅ ACFT merged updated:", writeRes, "TEXT:", newText);
 }
 
-
-const DATE_CELL = "AB51"; // <-- your target cell
-
+//--------------------------------------------
+// WRITE TODAY DATE -> AB51 as "21Dec2025"
+//--------------------------------------------
 function formatTodayDate() {
   const d = new Date();
-
   const day = String(d.getDate()).padStart(2, "0");
-
-  const months = [
-    "Jan","Feb","Mar","Apr","May","Jun",
-    "Jul","Aug","Sep","Oct","Nov","Dec"
-  ];
-
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const month = months[d.getMonth()];
   const year = d.getFullYear();
-
   return `${day}${month}${year}`;
 }
 
@@ -505,4 +470,67 @@ async function writeTodayDate() {
   );
 
   console.log(`✅ Date written to ${DATE_CELL}:`, today, res);
+}
+
+//--------------------------------------------
+// MAIN
+//--------------------------------------------
+async function processCrew() {
+  try {
+    const flight = document.getElementById("flightNumber").value.trim();
+    if (!flight) return alert("Enter flight number");
+
+    const file = document.getElementById("pdfFile").files[0];
+    if (!file) return alert("Upload a PDF");
+
+    const raw = await readPDF(file);
+
+    const lines = raw
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("==="));
+
+    const result = extractCrew(lines, flight);
+    if (!result.found) return alert("Flight not found!");
+    if (result.crew.length === 0) return alert("Flight found but NO CREW!");
+
+    // Find route line (first line containing flight number)
+    let routeLine = "";
+    for (let i = 0; i < lines.length; i++) {
+      if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
+        routeLine = lines[i];
+        break;
+      }
+    }
+    if (!routeLine) return alert("Route line not found in PDF!");
+
+    // ACFT REG (accept 7TVKL / 7T VKL / 7T-VKL)
+    const reg = extractAcftRegFromRoute(routeLine);
+    if (!reg) return alert("Aircraft registration not found in route line!");
+    console.log("✈ ACFT REG detected:", reg);
+
+    // Captain from route line
+    const cpMatch = routeLine.match(
+      /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
+    );
+    if (cpMatch) {
+      const cpFullName = "CP " + cpMatch[1].trim();
+      if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
+    }
+
+    console.log("===== FLIGHT JSON DEBUG =====");
+    console.log(JSON.stringify({ flight, route: routeLine, acftReg: reg, crew: result.crew }, null, 4));
+
+    await unmergeCrewAreasSmart();
+    await writePNTtoSheet(result.crew);
+    await writePNCtoSheet(result.crew);
+    await writeAircraftReg(reg);
+    await writeTodayDate();
+
+    window.open(getSheetUrl(), "_blank");
+    alert(`DONE! Crew imported. ACFT REG: ${normalizeAcftReg(reg)}`);
+  } catch (err) {
+    console.error("❌ PROCESS FAILED:", err);
+    alert("FAILED! Check console for details.");
+  }
 }
