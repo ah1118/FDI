@@ -641,6 +641,7 @@ async function processCrew() {
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(reg);
     await writeTodayDate();
+    await writeETDToSheet(etd);
     await window.applyFlightDataRules();
 
     // ✅ write ETD to E51
