@@ -52,6 +52,60 @@ function getSheetUrl() {
   return `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`;
 }
 
+// Ensure the sheet has at least minRows and minCols (A=1, Z=26, AA=27, AB=28)
+async function ensureSheetGrid(minRows, minCols) {
+  const token = await getAccessToken();
+  const sheetId = await getSheetId();
+
+  // Read current grid size
+  const metaUrl =
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
+    `?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`;
+
+  const meta = await fetchJSON(metaUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const sheet = (meta.sheets || []).find((s) => s.properties?.sheetId === sheetId);
+  if (!sheet) throw new Error("Sheet not found for grid resize");
+
+  const curRows = sheet.properties.gridProperties?.rowCount ?? 0;
+  const curCols = sheet.properties.gridProperties?.columnCount ?? 0;
+
+  if (curRows >= minRows && curCols >= minCols) return; // already big enough
+
+  const newRows = Math.max(curRows, minRows);
+  const newCols = Math.max(curCols, minCols);
+
+  const body = {
+    requests: [
+      {
+        updateSheetProperties: {
+          properties: {
+            sheetId,
+            gridProperties: { rowCount: newRows, columnCount: newCols },
+          },
+          fields: "gridProperties(rowCount,columnCount)",
+        },
+      },
+    ],
+  };
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  console.log(`✅ Grid expanded: rows=${newRows}, cols=${newCols}`);
+}
+
 //--------------------------------------------
 // TOKEN SYSTEM
 //--------------------------------------------
