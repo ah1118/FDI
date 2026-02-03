@@ -503,6 +503,9 @@ function formatTodayDate() {
 }
 
 async function writeTodayDate() {
+  // AB51 needs at least row 51 and column 28
+  await ensureSheetGrid(51, 28);
+
   const token = await getAccessToken();
   const today = formatTodayDate();
 
