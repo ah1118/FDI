@@ -37,11 +37,11 @@ TRXiUFADYhLF0ornhpwUmQ==
 const FLIGHT_RULES = {
   "1118": {
     cells: { D51: "CDG", C52: "CDG" },
-    addToE51: { hours: 2, minutes: 0 },
+    addToE51: { hours: 2, minutes: 0 },     // +2h
   },
   "1426": {
     cells: { D51: "MRS", C52: "MRS" },
-    addToE51: { hours: 1, minutes: 10 },
+    addToE51: { hours: 1, minutes: 10 },    // +1h10
   },
 };
 
@@ -49,17 +49,23 @@ const FLIGHT_RULES = {
 // TIME HELPERS
 // =====================================================
 function parseTimeToMinutes(v) {
-  if (typeof v === "number") {
+  // Google Sheets sometimes returns a number for time if you read with certain formats
+  if (typeof v === "number" && !Number.isNaN(v)) {
     return Math.round(v * 24 * 60) % (24 * 60);
   }
 
   const s = String(v || "").trim();
   if (!s) return null;
 
-  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  // accept "8:05", "08:05", "08:05:00", and tolerate spaces "08 : 05"
+  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?$/);
   if (!m) return null;
 
-  return Number(m[1]) * 60 + Number(m[2]);
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (Number.isNaN(hh) || Number.isNaN(mm) || hh > 23 || mm > 59) return null;
+
+  return hh * 60 + mm;
 }
 
 function minutesToHHMM(min) {
@@ -70,7 +76,7 @@ function minutesToHHMM(min) {
 function addDuration(base, add) {
   const baseMin = parseTimeToMinutes(base);
   if (baseMin == null) return null;
-  return minutesToHHMM(baseMin + add.hours * 60 + (add.minutes || 0));
+  return minutesToHHMM(baseMin + (add.hours * 60) + (add.minutes || 0));
 }
 
 // =====================================================
@@ -95,6 +101,8 @@ async function writeCells(cells) {
     values: [[value]],
   }));
 
+  if (!data.length) return;
+
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
@@ -115,34 +123,28 @@ async function writeCells(cells) {
 // MAIN LOGIC
 // =====================================================
 async function applyFlightDataRules() {
-  const flight = document.getElementById("flightNumber").value.trim();
+  const flight = (document.getElementById("flightNumber")?.value || "").trim();
   if (!flight) return;
 
   const rule = FLIGHT_RULES[flight];
 
-  // Always put entered flight number in G51
-  const updates = {
-    G51: flight,
-  };
+  // Always write flight number to G51
+  const updates = { G51: flight };
 
-  // If this flight has special rules
+  // Apply route + time only if flight is configured
   if (rule) {
-    // Route cells
-    if (rule.cells) {
-      Object.assign(updates, rule.cells);
-    }
+    if (rule.cells) Object.assign(updates, rule.cells);
 
-    // Time update in E51
     if (rule.addToE51) {
       const baseTime = await readCell("E51");
       const newTime = addDuration(baseTime, rule.addToE51);
       if (newTime) updates.E51 = newTime;
+      else console.warn("⚠️ Could not parse E51 time. Current:", baseTime);
     }
   }
 
   await writeCells(updates);
-
-  console.log("✅ Flight written to G51 and rules applied:", updates);
+  console.log("✅ Flight rules applied:", updates);
 }
 
 // expose to app.js
