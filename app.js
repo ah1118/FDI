@@ -55,9 +55,9 @@ function getSheetUrl() {
 // Ensure the sheet has at least minRows and minCols (A=1, Z=26, AA=27, AB=28)
 async function ensureSheetGrid(minRows, minCols) {
   const token = await getAccessToken();
-  const sheetId = await getSheetId();
+  const sheetId = await getSheetId(); // you already have this
 
-  // Read current grid size
+  // Get current grid size
   const metaUrl =
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
     `?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`;
@@ -72,11 +72,13 @@ async function ensureSheetGrid(minRows, minCols) {
   const curRows = sheet.properties.gridProperties?.rowCount ?? 0;
   const curCols = sheet.properties.gridProperties?.columnCount ?? 0;
 
-  if (curRows >= minRows && curCols >= minCols) return; // already big enough
+  // Already big enough
+  if (curRows >= minRows && curCols >= minCols) return;
 
   const newRows = Math.max(curRows, minRows);
   const newCols = Math.max(curCols, minCols);
 
+  // Resize grid
   const body = {
     requests: [
       {
@@ -103,7 +105,7 @@ async function ensureSheetGrid(minRows, minCols) {
     }
   );
 
-  console.log(`✅ Grid expanded: rows=${newRows}, cols=${newCols}`);
+  console.log(`✅ Grid resized to rows=${newRows}, cols=${newCols}`);
 }
 
 //--------------------------------------------
@@ -497,13 +499,11 @@ function formatTodayDate() {
   const d = new Date();
   const day = String(d.getDate()).padStart(2, "0");
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const month = months[d.getMonth()];
-  const year = d.getFullYear();
-  return `${day}${month}${year}`;
+  return `${day}${months[d.getMonth()]}${d.getFullYear()}`; // 21Dec2025
 }
 
 async function writeTodayDate() {
-  // AB51 needs at least row 51 and column 28
+  // AB = 28th column, row 51
   await ensureSheetGrid(51, 28);
 
   const token = await getAccessToken();
