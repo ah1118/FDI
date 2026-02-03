@@ -34,10 +34,15 @@ TRXiUFADYhLF0ornhpwUmQ==
 const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
 const SHEET_TITLE = "Sheet1";
 
+// Opens spreadsheet (default gid=0). Adjust gid if you want a specific tab.
+function getSheetUrl() {
+  return `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`;
+}
+
 // Target blocks (A8:G20) and (H8:T20) in GridRange indexing (0-based)
 const LEFT_BLOCK = {
-  startRowIndex: 7,   // row 8
-  endRowIndex: 20,    // row 20 exclusive
+  startRowIndex: 7,    // row 8
+  endRowIndex: 20,     // row 20 exclusive
   startColumnIndex: 0, // A
   endColumnIndex: 7,   // G exclusive
 };
@@ -203,7 +208,7 @@ async function getSheetMerges(sheetId) {
     headers: { Authorization: `Bearer ${token}` },
   });
 
-  const sheet = (data.sheets || []).find(s => s.properties?.sheetId === sheetId);
+  const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === sheetId);
   return sheet?.merges || [];
 }
 
@@ -219,8 +224,8 @@ async function unmergeCrewAreasSmart() {
 
   const merges = await getSheetMerges(sheetId);
 
-  const mergesToUnmerge = merges.filter(m =>
-    m.sheetId === sheetId && (rangesIntersect(m, left) || rangesIntersect(m, right))
+  const mergesToUnmerge = merges.filter(
+    (m) => m.sheetId === sheetId && (rangesIntersect(m, left) || rangesIntersect(m, right))
   );
 
   if (mergesToUnmerge.length === 0) {
@@ -228,9 +233,8 @@ async function unmergeCrewAreasSmart() {
     return;
   }
 
-  // Google allows multiple requests, but keep it reasonable
   const body = {
-    requests: mergesToUnmerge.map(m => ({ unmergeCells: { range: m } })),
+    requests: mergesToUnmerge.map((m) => ({ unmergeCells: { range: m } })),
   };
 
   await fetchJSON(
@@ -310,8 +314,11 @@ function extractCrew(lines, flightNumber) {
     let line = (lines[i] || "").trim();
 
     // Stop if we hit a new flight line
-    // (This is safer than relying on layout)
-    if (i !== flightIndex && new RegExp(`\\b\\d{3,5}\\b`).test(line) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)) {
+    if (
+      i !== flightIndex &&
+      /\b\d{3,5}\b/.test(line) &&
+      /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)
+    ) {
       break;
     }
 
@@ -366,7 +373,9 @@ async function writePNTtoSheet(crew) {
 
 async function writePNCtoSheet(crew) {
   const token = await getAccessToken();
-  const pnc = crew.filter((c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA "));
+  const pnc = crew.filter(
+    (c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA ")
+  );
   const textBlock = pnc.join("\n");
 
   const body = {
@@ -443,6 +452,9 @@ async function processCrew() {
     // Write blocks
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
+
+    // ✅ Open the sheet AFTER writing (you accept popup blocker risk)
+    window.open(getSheetUrl(), "_blank");
 
     alert("DONE! Crew imported.");
   } catch (err) {
