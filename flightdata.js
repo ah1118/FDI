@@ -1,17 +1,31 @@
+/* =====================================================
+   flightdata.js  (FULL UPDATED FILE)
+   - Outbound:
+     G51 = flight number
+     D51/C52 = route
+     F51 = E51 + flightTime            (STA outbound)
+   - Return:
+     G52 = G51 + 1
+     E52 = F51 + layoverTime           (ETD return)
+     F52 = E52 + returnFlightTime      (STA return)
+   ===================================================== */
+
 // =====================================================
 // FLIGHT RULES
 // =====================================================
 const FLIGHT_RULES = {
   "1118": {
     cells: { D51: "CDG", C52: "CDG" },
-    flightTime: { hours: 2, minutes: 0 }, // 2h
-    layoverTime: { hours: 1, minutes: 0 }, // 1h
+    flightTime: { hours: 2, minutes: 0 },        // outbound flight time
+    layoverTime: { hours: 1, minutes: 0 },       // layover
+    returnFlightTime: { hours: 2, minutes: 0 },  // return flight time
     addReturn: true,
   },
   "1426": {
     cells: { D51: "MRS", C52: "MRS" },
-    flightTime: { hours: 1, minutes: 10 }, // 1h10
-    layoverTime: { hours: 1, minutes: 0 }, // 1h
+    flightTime: { hours: 1, minutes: 10 },        // outbound flight time
+    layoverTime: { hours: 1, minutes: 0 },        // layover
+    returnFlightTime: { hours: 1, minutes: 10 },  // return flight time
     addReturn: true,
   },
 };
@@ -113,9 +127,9 @@ async function applyFlightDataRules() {
     if (rule.cells) Object.assign(updates, rule.cells);
 
     // 1) OUTBOUND STA: F51 = E51 + flightTime
-    let staOutbound = null; // store computed STA to reuse
+    let staOutbound = null;
     if (rule.flightTime) {
-      const etdOutbound = await readCell("E51"); // ETD outbound
+      const etdOutbound = await readCell("E51"); // outbound ETD
       staOutbound = addDuration(etdOutbound, rule.flightTime);
 
       if (staOutbound) updates.F51 = staOutbound;
@@ -128,13 +142,22 @@ async function applyFlightDataRules() {
     }
 
     // 3) RETURN ETD: E52 = STA outbound (F51) + layoverTime
-    //    If we computed STA above, use it. Otherwise read F51 from sheet.
+    let etdReturn = null;
     if (rule.layoverTime) {
-      const sta = staOutbound ?? (await readCell("F51")); // STA outbound
-      const etdReturn = addDuration(sta, rule.layoverTime);
+      const sta = staOutbound ?? (await readCell("F51"));
+      etdReturn = addDuration(sta, rule.layoverTime);
 
       if (etdReturn) updates.E52 = etdReturn;
       else console.warn("⚠️ Could not parse STA (F51) time. Current:", sta);
+    }
+
+    // 4) RETURN STA: F52 = ETD return (E52) + returnFlightTime
+    if (rule.returnFlightTime) {
+      const etd = etdReturn ?? (await readCell("E52"));
+      const staReturn = addDuration(etd, rule.returnFlightTime);
+
+      if (staReturn) updates.F52 = staReturn;
+      else console.warn("⚠️ Could not parse ETD return (E52) time. Current:", etd);
     }
   }
 
