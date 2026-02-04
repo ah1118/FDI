@@ -59,9 +59,8 @@ function getSheetUrl() {
 // Ensure the sheet has at least minRows and minCols (A=1, Z=26, AA=27, AB=28)
 async function ensureSheetGrid(minRows, minCols) {
   const token = await getAccessToken();
-  const sheetId = await getSheetId(); // you already have this
+  const sheetId = await getSheetId();
 
-  // Get current grid size
   const metaUrl =
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
     `?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`;
@@ -76,13 +75,11 @@ async function ensureSheetGrid(minRows, minCols) {
   const curRows = sheet.properties.gridProperties?.rowCount ?? 0;
   const curCols = sheet.properties.gridProperties?.columnCount ?? 0;
 
-  // Already big enough
   if (curRows >= minRows && curCols >= minCols) return;
 
   const newRows = Math.max(curRows, minRows);
   const newCols = Math.max(curCols, minCols);
 
-  // Resize grid
   const body = {
     requests: [
       {
@@ -333,6 +330,86 @@ async function readPDF(file) {
 }
 
 //--------------------------------------------
+// PDF DATE DETECTOR (writes PDF report date to A51)
+//--------------------------------------------
+function formatSheetDate(d) {
+  const day = String(d.getDate()).padStart(2, "0");
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${day}${months[d.getMonth()]}${d.getFullYear()}`; // 02Feb2026
+}
+
+function parseDMY(dd, mm, yyyy) {
+  const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function parseMonTextDate(dayStr, monStr, yearStr) {
+  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const key = monStr.slice(0,3);
+  const m = months[key[0].toUpperCase() + key.slice(1).toLowerCase()];
+  if (m === undefined) return null;
+  const d = new Date(Number(yearStr), m, Number(dayStr));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function extractReportDate(lines) {
+  const headerZone = lines.slice(0, 80).join(" ");
+
+  // Prefer: FROM 02/02/2026 to 02/02/2026
+  let m = headerZone.match(/\bFROM\s+(\d{2})\/(\d{2})\/(\d{4})\s+to\s+(\d{2})\/(\d{2})\/(\d{4})\b/i);
+  if (m) {
+    const d1 = parseDMY(m[1], m[2], m[3]); // use FROM date
+    if (d1) return formatSheetDate(d1);
+  }
+
+  // Fallback: Sun , 01 Feb 2026
+  m = headerZone.match(/\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*,?\s*(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\b/i);
+  if (m) {
+    const d2 = parseMonTextDate(m[1], m[2], m[3]);
+    if (d2) return formatSheetDate(d2);
+  }
+
+  // Last fallback: first dd/mm/yyyy
+  m = headerZone.match(/\b(\d{2})\/(\d{2})\/(\d{4})\b/);
+  if (m) {
+    const d3 = parseDMY(m[1], m[2], m[3]);
+    if (d3) return formatSheetDate(d3);
+  }
+
+  return null;
+}
+
+async function writePDFReportDateToSheet(dateText) {
+  const token = await getAccessToken();
+  if (!dateText) throw new Error("PDF report date not found");
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(DATE_MERGED_RANGE)}:clear`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }
+  );
+
+  const body = {
+    valueInputOption: "RAW",
+    data: [{ range: DATE_TOP_LEFT, values: [[dateText]] }],
+  };
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+
+  console.log(`✅ PDF date written to ${DATE_TOP_LEFT}:`, dateText);
+}
+
+//--------------------------------------------
 // CREW EXTRACTOR
 //--------------------------------------------
 function extractCrew(lines, flightNumber) {
@@ -419,12 +496,10 @@ async function writePNCtoSheet(crew) {
 
 //--------------------------------------------
 // ACFT REG NORMALIZATION
-//  - input: "7TVKL" or "7T VKL" or "7T-VKL" -> output: "7T-VKL"
 //--------------------------------------------
 function normalizeAcftReg(raw) {
   if (!raw) return "";
   const s = String(raw).toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-  // Expect 5 chars like 7TVKL
   if (s.length >= 5) {
     const a = s.slice(0, 2);
     const b = s.slice(2, 5);
@@ -433,8 +508,6 @@ function normalizeAcftReg(raw) {
   return raw.toUpperCase();
 }
 
-// Extract reg from route line in ANY of these forms:
-// 7TVKL, 7T VKL, 7T-VKL
 function extractAcftRegFromRoute(routeLine) {
   const m = routeLine.toUpperCase().match(/\b([A-Z0-9]{2})[-\s]?([A-Z0-9]{3})\b/);
   if (!m) return null;
@@ -442,116 +515,55 @@ function extractAcftRegFromRoute(routeLine) {
 }
 
 //--------------------------------------------
-// WRITE AIRCRAFT REG (CLEAR D4:N6 then write ONE LINE into D4)
-//  - uses your exact template
-//  - replaces 123456 -> reg
-//  - replaces "---------------------" with SAME COUNT spaces
+// WRITE AIRCRAFT REG
 //--------------------------------------------
 async function writeAircraftReg(acftRegRaw) {
   const token = await getAccessToken();
-
   const acftReg = normalizeAcftReg(acftRegRaw);
 
-  // 1) CLEAR values in merged range D4:N6 (does NOT remove formatting)
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(ACFT_MERGED_RANGE)}:clear`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({}),
     }
   );
 
-  // 2) Build text exactly like your requested template
   const template = "PREVU:123456---------------------REEL:123456";
-
-  const dashRun = (template.match(/-+/) || [""])[0]; // "---------------------"
-  const gapSpaces = " ".repeat(dashRun.length);      // same number of spaces
+  const dashRun = (template.match(/-+/) || [""])[0];
+  const gapSpaces = " ".repeat(dashRun.length);
 
   const newText = template
-    .split("123456").join(acftReg)  // replace both 123456
-    .replace(dashRun, gapSpaces);   // replace dash run with spaces (same count)
+    .split("123456").join(acftReg)
+    .replace(dashRun, gapSpaces);
 
-  // 3) Write ONLY to top-left cell of merged range (D4)
   const body = {
     valueInputOption: "RAW",
     data: [{ range: ACFT_TOP_LEFT, values: [[newText]] }],
   };
 
-  const writeRes = await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }
-  );
-
-  console.log("✅ ACFT merged updated:", writeRes, "TEXT:", newText);
-}
-
-//--------------------------------------------
-// WRITE TODAY DATE -> AB51 as "21Dec2025"
-//--------------------------------------------
-function formatTodayDate() {
-  const d = new Date();
-  const day = String(d.getDate()).padStart(2, "0");
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return `${day}${months[d.getMonth()]}${d.getFullYear()}`; // 21Dec2025
-}
-
-async function writeTodayDate() {
-  const token = await getAccessToken();
-  const today = formatTodayDate();
-
-  // 1) clear whole merged cell (values only)
   await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(DATE_MERGED_RANGE)}:clear`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({}),
-    }
-  );
-
-  // 2) write to top-left cell of merge (A51)
-  const body = {
-    valueInputOption: "RAW",
-    data: [{ range: DATE_TOP_LEFT, values: [[today]] }],
-  };
-
-  const res = await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }
   );
 
-  console.log(`✅ Date written to ${DATE_TOP_LEFT}:`, today, res);
+  console.log("✅ ACFT merged updated. TEXT:", newText);
 }
 
-// Extract ETD from route line (first HH:MM found)
+//--------------------------------------------
+// ETD
+//--------------------------------------------
 function extractETDFromRoute(routeLine) {
   if (!routeLine) return null;
-  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g); // all HH:MM
-  return times && times.length ? times[0] : null; // first time = ETD
+  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g);
+  return times && times.length ? times[0] : null;
 }
 
-// Write ETD to E51
 async function writeETDToSheet(etd) {
   const token = await getAccessToken();
   if (!etd) throw new Error("ETD is empty (not found)");
@@ -561,7 +573,7 @@ async function writeETDToSheet(etd) {
     data: [{ range: ETD_CELL, values: [[etd]] }],
   };
 
-  const res = await fetchJSON(
+  await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
       method: "POST",
@@ -570,11 +582,8 @@ async function writeETDToSheet(etd) {
     }
   );
 
-  console.log(`✅ ETD written to ${ETD_CELL}:`, etd, res);
+  console.log(`✅ ETD written to ${ETD_CELL}:`, etd);
 }
-
-
-
 
 //--------------------------------------------
 // MAIN
@@ -594,6 +603,11 @@ async function processCrew() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
+    // ✅ Detect PDF report date from header and write it to A51
+    const pdfDate = extractReportDate(lines);
+    if (!pdfDate) return alert("PDF report date not found in header!");
+    console.log("📅 PDF date detected:", pdfDate);
+
     const result = extractCrew(lines, flight);
     if (!result.found) return alert("Flight not found!");
     if (result.crew.length === 0) return alert("Flight found but NO CREW!");
@@ -608,12 +622,12 @@ async function processCrew() {
     }
     if (!routeLine) return alert("Route line not found in PDF!");
 
-    // ✅ ETD (first HH:MM in route line)
+    // ETD
     const etd = extractETDFromRoute(routeLine);
     if (!etd) return alert("ETD not found in route line!");
     console.log("🕒 ETD detected:", etd);
 
-    // ACFT REG (accept 7TVKL / 7T VKL / 7T-VKL)
+    // ACFT REG
     const reg = extractAcftRegFromRoute(routeLine);
     if (!reg) return alert("Aircraft registration not found in route line!");
     console.log("✈ ACFT REG detected:", reg);
@@ -630,7 +644,7 @@ async function processCrew() {
     console.log("===== FLIGHT JSON DEBUG =====");
     console.log(
       JSON.stringify(
-        { flight, route: routeLine, acftReg: reg, etd, crew: result.crew },
+        { flight, route: routeLine, acftReg: reg, etd, pdfDate, crew: result.crew },
         null,
         4
       )
@@ -640,20 +654,19 @@ async function processCrew() {
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(reg);
-    await writeTodayDate();
+
+    // ✅ write PDF date (NOT today)
+    await writePDFReportDateToSheet(pdfDate);
+
+    // ✅ write ETD once
     await writeETDToSheet(etd);
+
     await window.applyFlightDataRules();
 
-    // ✅ write ETD to E51
-    await writeETDToSheet(etd);
-
     window.open(getSheetUrl(), "_blank");
-    alert(
-      `DONE! Crew imported. ACFT REG: ${normalizeAcftReg(reg)} | ETD: ${etd}`
-    );
+    alert(`DONE! Crew imported. DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd}`);
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
-
