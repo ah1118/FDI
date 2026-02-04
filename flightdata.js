@@ -1,16 +1,16 @@
-
-
 // =====================================================
-// FLIGHT RULES
+// FLIGHT RULES (UPDATED)
+// 1118 => CDG + 2:00
+// 1426 => MRS + 1:10
 // =====================================================
 const FLIGHT_RULES = {
   "1118": {
     cells: { D51: "CDG", C52: "CDG" },
-    addToF51: { hours: 2, minutes: 0 },     // +2h
+    flightTime: { hours: 2, minutes: 0 }, // 2h
   },
   "1426": {
     cells: { D51: "MRS", C52: "MRS" },
-    addToF51: { hours: 1, minutes: 10 },    // +1h10
+    flightTime: { hours: 1, minutes: 10 }, // 1h10
   },
 };
 
@@ -26,7 +26,7 @@ function parseTimeToMinutes(v) {
   const s = String(v || "").trim();
   if (!s) return null;
 
-  // accept "8:05", "08:05", "08:05:00", and tolerate spaces "08 : 05"
+  // accept "8:05", "08:05", "08:05:00", tolerate "08 : 05"
   const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?$/);
   if (!m) return null;
 
@@ -45,7 +45,9 @@ function minutesToHHMM(min) {
 function addDuration(base, add) {
   const baseMin = parseTimeToMinutes(base);
   if (baseMin == null) return null;
-  return minutesToHHMM(baseMin + (add.hours * 60) + (add.minutes || 0));
+
+  const addMin = (add?.hours || 0) * 60 + (add?.minutes || 0);
+  return minutesToHHMM(baseMin + addMin);
 }
 
 // =====================================================
@@ -59,7 +61,7 @@ async function readCell(cell) {
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
-  return res.values?.[0]?.[0] || "";
+  return res.values?.[0]?.[0] ?? "";
 }
 
 async function writeCells(cells) {
@@ -102,13 +104,16 @@ async function applyFlightDataRules() {
 
   // Apply route + time only if flight is configured
   if (rule) {
+    // Route cells (D51 / C52)
     if (rule.cells) Object.assign(updates, rule.cells);
 
-    if (rule.addToF51) {
-      const baseTime = await readCell("F51");
-      const newTime = addDuration(baseTime, rule.addToF51);
-      if (newTime) updates.F51 = newTime;
-      else console.warn("⚠️ Could not parse F51 time. Current:", baseTime);
+    // ✅ F51 = E51 + flight duration
+    if (rule.flightTime) {
+      const depTime = await readCell("E51"); // departure time in E51
+      const arrTime = addDuration(depTime, rule.flightTime);
+
+      if (arrTime) updates.F51 = arrTime; // arrival time in F51
+      else console.warn("⚠️ Could not parse E51 time. Current:", depTime);
     }
   }
 
