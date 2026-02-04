@@ -21,7 +21,7 @@
    ===================================================== */
 
 // =====================================================
-// FLIGHT RULES
+// FLIGHT RULES (UPDATED: added 3022 CZL <-> IST)
 // =====================================================
 const FLIGHT_RULES = {
   "1118": {
@@ -36,6 +36,19 @@ const FLIGHT_RULES = {
     flightTime: { hours: 1, minutes: 10 },        // outbound
     layoverTime: { hours: 1, minutes: 0 },        // layover
     returnFlightTime: { hours: 1, minutes: 10 },  // return
+    addReturn: true,
+  },
+
+  // ✅ NEW FLIGHT
+  // 3022 CZL -> IST
+  // ETD 21:30, ETA 00:30 (so flight time = 3:00)
+  // Return ETD 01:30, Return ETA 04:30 (flight time return = 3:00)
+  // Layover = 1:00
+  "3022": {
+    cells: { D51: "IST", C52: "IST" },            // destination shown like your other rules
+    flightTime: { hours: 3, minutes: 0 },         // 21:30 -> 00:30
+    layoverTime: { hours: 1, minutes: 0 },        // 1h
+    returnFlightTime: { hours: 3, minutes: 0 },   // 01:30 -> 04:30
     addReturn: true,
   },
 };
