@@ -1,16 +1,20 @@
+/* =====================================================
+   flightdata.js  (FULL UPDATED FILE)
+   ===================================================== */
+
 // =====================================================
-// FLIGHT RULES (UPDATED)
-// 1118 => CDG + 2:00
-// 1426 => MRS + 1:10
+// FLIGHT RULES
 // =====================================================
 const FLIGHT_RULES = {
   "1118": {
     cells: { D51: "CDG", C52: "CDG" },
-    flightTime: { hours: 2, minutes: 0 }, // 2h
+    flightTime: { hours: 2, minutes: 0 },   // 2h
+    addReturn: true,                        // <-- enable return flight
   },
   "1426": {
     cells: { D51: "MRS", C52: "MRS" },
-    flightTime: { hours: 1, minutes: 10 }, // 1h10
+    flightTime: { hours: 1, minutes: 10 },  // 1h10
+    addReturn: true,                        // <-- enable return flight
   },
 };
 
@@ -18,7 +22,6 @@ const FLIGHT_RULES = {
 // TIME HELPERS
 // =====================================================
 function parseTimeToMinutes(v) {
-  // Google Sheets sometimes returns a number for time if you read with certain formats
   if (typeof v === "number" && !Number.isNaN(v)) {
     return Math.round(v * 24 * 60) % (24 * 60);
   }
@@ -26,13 +29,12 @@ function parseTimeToMinutes(v) {
   const s = String(v || "").trim();
   if (!s) return null;
 
-  // accept "8:05", "08:05", "08:05:00", tolerate "08 : 05"
   const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?$/);
   if (!m) return null;
 
   const hh = Number(m[1]);
   const mm = Number(m[2]);
-  if (Number.isNaN(hh) || Number.isNaN(mm) || hh > 23 || mm > 59) return null;
+  if (hh > 23 || mm > 59) return null;
 
   return hh * 60 + mm;
 }
@@ -46,7 +48,7 @@ function addDuration(base, add) {
   const baseMin = parseTimeToMinutes(base);
   if (baseMin == null) return null;
 
-  const addMin = (add?.hours || 0) * 60 + (add?.minutes || 0);
+  const addMin = (add.hours || 0) * 60 + (add.minutes || 0);
   return minutesToHHMM(baseMin + addMin);
 }
 
@@ -94,30 +96,46 @@ async function writeCells(cells) {
 // MAIN LOGIC
 // =====================================================
 async function applyFlightDataRules() {
-  const flight = (document.getElementById("flightNumber")?.value || "").trim();
-  if (!flight) return;
+  const flightStr = (document.getElementById("flightNumber")?.value || "").trim();
+  if (!flightStr) return;
 
-  const rule = FLIGHT_RULES[flight];
+  const flightNum = Number(flightStr);
+  if (Number.isNaN(flightNum)) return;
 
-  // Always write flight number to G51
-  const updates = { G51: flight };
+  const rule = FLIGHT_RULES[flightStr];
 
-  // Apply route + time only if flight is configured
+  // Always write main flight to G51
+  const updates = {
+    G51: flightStr,
+  };
+
+  // ==============================
+  // APPLY RULES (1118 & 1426)
+  // ==============================
   if (rule) {
-    // Route cells (D51 / C52)
-    if (rule.cells) Object.assign(updates, rule.cells);
 
-    // ✅ F51 = E51 + flight duration
+    // Route cells
+    if (rule.cells) {
+      Object.assign(updates, rule.cells);
+    }
+
+    // ✈️ Arrival time: F51 = E51 + flight time
     if (rule.flightTime) {
-      const depTime = await readCell("E51"); // departure time in E51
+      const depTime = await readCell("E51");
       const arrTime = addDuration(depTime, rule.flightTime);
 
-      if (arrTime) updates.F51 = arrTime; // arrival time in F51
-      else console.warn("⚠️ Could not parse E51 time. Current:", depTime);
+      if (arrTime) updates.F51 = arrTime;
+      else console.warn("⚠️ Bad E51 time:", depTime);
+    }
+
+    // 🔁 Return flight: G52 = G51 + 1
+    if (rule.addReturn === true) {
+      updates.G52 = String(flightNum + 1);
     }
   }
 
   await writeCells(updates);
+
   console.log("✅ Flight rules applied:", updates);
 }
 
