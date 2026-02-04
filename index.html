@@ -21,10 +21,11 @@
     <button onclick="processCrew()">Process</button>
   </div>
 
-  <!-- ✅ Add this -->
+  <!-- ✅ app.js first (defines processCrew + token helpers) -->
+  <script src="app.js"></script>
+
+  <!-- ✅ flightdata.js second (uses app.js helpers) -->
   <script src="flightdata.js"></script>
 
-  <!-- Keep this -->
-  <script src="app.js"></script>
 </body>
 </html>
