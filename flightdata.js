@@ -1,5 +1,5 @@
 /* =====================================================
-   flightdata.js  (FULL UPDATED FILE)
+   flightdata.js
 
    Outbound (row 51):
      Date:  A51:B51 (merged)
@@ -16,48 +16,14 @@
    Logic:
      F51 = E51 + flightTime
      E52 = F51 + layoverTime
-     if (F51 + layover crosses midnight) return date = outbound date + 1
+     if (F51 + layover crosses midnight) return date = outbound date + 1 else same date
      F52 = E52 + returnFlightTime
    ===================================================== */
-
-// =====================================================
-// FLIGHT RULES (UPDATED: added 3022 CZL <-> IST)
-// =====================================================
-const FLIGHT_RULES = {
-  "1118": {
-    cells: { D51: "CDG", C52: "CDG" },
-    flightTime: { hours: 2, minutes: 0 },        // outbound
-    layoverTime: { hours: 1, minutes: 0 },       // layover
-    returnFlightTime: { hours: 2, minutes: 0 },  // return
-    addReturn: true,
-  },
-  "1426": {
-    cells: { D51: "MRS", C52: "MRS" },
-    flightTime: { hours: 1, minutes: 10 },        // outbound
-    layoverTime: { hours: 1, minutes: 0 },        // layover
-    returnFlightTime: { hours: 1, minutes: 10 },  // return
-    addReturn: true,
-  },
-
-  // ✅ NEW FLIGHT
-  // 3022 CZL -> IST
-  // ETD 21:30, ETA 00:30 (so flight time = 3:00)
-  // Return ETD 01:30, Return ETA 04:30 (flight time return = 3:00)
-  // Layover = 1:00
-  "3022": {
-    cells: { D51: "IST", C52: "IST" },            // destination shown like your other rules
-    flightTime: { hours: 3, minutes: 0 },         // 21:30 -> 00:30
-    layoverTime: { hours: 1, minutes: 0 },        // 1h
-    returnFlightTime: { hours: 3, minutes: 0 },   // 01:30 -> 04:30
-    addReturn: true,
-  },
-};
 
 // =====================================================
 // TIME HELPERS
 // =====================================================
 function parseTimeToMinutes(v) {
-  // Google Sheets can return time as a number (fraction of day)
   if (typeof v === "number" && !Number.isNaN(v)) {
     return Math.round(v * 24 * 60) % (24 * 60);
   }
@@ -65,7 +31,6 @@ function parseTimeToMinutes(v) {
   const s = String(v || "").trim();
   if (!s) return null;
 
-  // "8:05", "08:05", "08:05:00", "08 : 05"
   const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?$/);
   if (!m) return null;
 
@@ -92,7 +57,7 @@ function addDuration(base, add) {
 }
 
 // =====================================================
-// DATE HELPERS  (format in your sheet: "02Feb2026")
+// DATE HELPERS  (format: "02Feb2026")
 // =====================================================
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -109,7 +74,6 @@ function parseDDMonYYYY(s) {
   if (monIndex < 0) return null;
 
   const d = new Date(Date.UTC(yyyy, monIndex, dd));
-  // validate (avoid 31Feb etc.)
   if (d.getUTCFullYear() !== yyyy || d.getUTCMonth() !== monIndex || d.getUTCDate() !== dd) return null;
 
   return d;
@@ -178,18 +142,15 @@ async function applyFlightDataRules() {
   const flightNum = Number(flightStr);
   if (Number.isNaN(flightNum)) return;
 
-  const rule = FLIGHT_RULES[flightStr];
+  const RULES = window.FLIGHT_RULES || {};
+  const rule = RULES[flightStr];
 
-  // Always write main flight to G51
   const updates = { G51: flightStr };
 
   if (rule) {
-    // Route cells
     if (rule.cells) Object.assign(updates, rule.cells);
 
-    // -----------------------------
-    // 1) OUTBOUND STA: F51 = E51 + flightTime
-    // -----------------------------
+    // 1) F51 = E51 + flightTime
     let staOutboundHHMM = null;
     let staOutboundMin = null;
 
@@ -200,44 +161,30 @@ async function applyFlightDataRules() {
       if (staOutboundHHMM) {
         updates.F51 = staOutboundHHMM;
         staOutboundMin = parseTimeToMinutes(staOutboundHHMM);
-      } else {
-        console.warn("⚠️ Could not parse E51 time. Current:", etdOutbound);
       }
     }
 
-    // -----------------------------
-    // 2) RETURN FLIGHT NUMBER: G52 = G51 + 1
-    // -----------------------------
+    // 2) G52 = G51 + 1
     if (rule.addReturn === true) {
       updates.G52 = String(flightNum + 1);
     }
 
-    // -----------------------------
-    // 3) RETURN ETD: E52 = F51 + layoverTime
-    //    + Return Date in merged A52:B52 (if midnight crossed => +1 day)
-    // -----------------------------
+    // 3) E52 = F51 + layoverTime + return date (A52/B52)
     let etdReturnHHMM = null;
 
     if (rule.layoverTime) {
-      // If STA outbound not computed above, read it
       if (staOutboundMin == null) {
         const staFromSheet = await readCell("F51");
         staOutboundMin = parseTimeToMinutes(staFromSheet);
       }
 
-      // compute E52 from STA outbound
       const staStr = staOutboundHHMM ?? (await readCell("F51"));
       etdReturnHHMM = addDuration(staStr, rule.layoverTime);
-
       if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
-      else console.warn("⚠️ Could not parse STA outbound (F51). Current:", staStr);
 
-      // ---- midnight check + return date update
-      // if (STA minutes + layover minutes >= 1440) => crossed midnight
       if (staOutboundMin != null) {
         const crossesMidnight = (staOutboundMin + durationToMinutes(rule.layoverTime)) >= 1440;
 
-        // Outbound date is in merged A51:B51 (top-left A51 usually holds value)
         const outboundDateStr = (await readCell("A51")) || (await readCell("B51"));
         const outboundDate = parseDDMonYYYY(outboundDateStr);
 
@@ -245,24 +192,17 @@ async function applyFlightDataRules() {
           const returnDate = crossesMidnight ? addDaysUTC(outboundDate, 1) : outboundDate;
           const returnDateStr = formatDDMonYYYY(returnDate);
 
-          // merged A52:B52 -> write same value to both to be safe
-          updates.A52 = returnDateStr;
+          updates.A52 = returnDateStr; // merged A52:B52
           updates.B52 = returnDateStr;
-        } else {
-          console.warn("⚠️ Could not parse outbound date (A51/B51). Current:", outboundDateStr);
         }
       }
     }
 
-    // -----------------------------
-    // 4) RETURN STA: F52 = E52 + returnFlightTime
-    // -----------------------------
+    // 4) F52 = E52 + returnFlightTime
     if (rule.returnFlightTime) {
       const etd = etdReturnHHMM ?? (await readCell("E52"));
       const staReturn = addDuration(etd, rule.returnFlightTime);
-
       if (staReturn) updates.F52 = staReturn;
-      else console.warn("⚠️ Could not parse ETD return (E52). Current:", etd);
     }
   }
 
@@ -270,5 +210,4 @@ async function applyFlightDataRules() {
   console.log("✅ Flight rules applied:", updates);
 }
 
-// expose to app.js
 window.applyFlightDataRules = applyFlightDataRules;
