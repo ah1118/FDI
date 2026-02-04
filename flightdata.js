@@ -6,11 +6,11 @@
 const FLIGHT_RULES = {
   "1118": {
     cells: { D51: "CDG", C52: "CDG" },
-    addToE51: { hours: 2, minutes: 0 },     // +2h
+    addToF51: { hours: 2, minutes: 0 },     // +2h
   },
   "1426": {
     cells: { D51: "MRS", C52: "MRS" },
-    addToE51: { hours: 1, minutes: 10 },    // +1h10
+    addToF51: { hours: 1, minutes: 10 },    // +1h10
   },
 };
 
