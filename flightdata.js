@@ -104,11 +104,11 @@ async function applyFlightDataRules() {
   if (rule) {
     if (rule.cells) Object.assign(updates, rule.cells);
 
-    if (rule.addToE51) {
-      const baseTime = await readCell("E51");
-      const newTime = addDuration(baseTime, rule.addToE51);
-      if (newTime) updates.E51 = newTime;
-      else console.warn("⚠️ Could not parse E51 time. Current:", baseTime);
+    if (rule.addToF51) {
+      const baseTime = await readCell("F51");
+      const newTime = addDuration(baseTime, rule.addToF51);
+      if (newTime) updates.F51 = newTime;
+      else console.warn("⚠️ Could not parse F51 time. Current:", baseTime);
     }
   }
 
