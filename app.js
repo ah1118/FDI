@@ -56,6 +56,20 @@ function getSheetUrl() {
   return `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`;
 }
 
+function extractLegsFromRoute(routeLine) {
+  if (!routeLine) return null;
+  const m = routeLine.toUpperCase().match(/\b([A-Z]{3})\s*-\s*([A-Z]{3})\b/);
+  if (!m) return null;
+  return { from: m[1], to: m[2] };
+}
+
+function extractETDFromRoute(routeLine) {
+  if (!routeLine) return null;
+  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g);
+  return times?.[0] ?? null;
+}
+
+
 // Ensure the sheet has at least minRows and minCols (A=1, Z=26, AA=27, AB=28)
 async function ensureSheetGrid(minRows, minCols) {
   const token = await getAccessToken();
@@ -588,6 +602,9 @@ async function writeETDToSheet(etd) {
 //--------------------------------------------
 // MAIN
 //--------------------------------------------
+//--------------------------------------------
+// MAIN
+//--------------------------------------------
 async function processCrew() {
   try {
     const flight = document.getElementById("flightNumber").value.trim();
@@ -603,7 +620,7 @@ async function processCrew() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // ✅ Detect PDF report date from header (DO NOT write here anymore)
+    // ✅ PDF report date (DO NOT write here anymore)
     const pdfDate = extractReportDate(lines);
     if (!pdfDate) return alert("PDF report date not found in header!");
     console.log("📅 PDF date detected:", pdfDate);
@@ -622,7 +639,12 @@ async function processCrew() {
     }
     if (!routeLine) return alert("Route line not found in PDF!");
 
-    // ETD (DO NOT write here anymore)
+    // ✅ LEGS from route line (CZL - CDG)
+    const legs = extractLegsFromRoute(routeLine);
+    if (!legs) return alert("Route legs not found (ex: CZL - CDG)!");
+    console.log("🧭 LEGS detected:", legs.from, "->", legs.to);
+
+    // ✅ ETD from route line (first HH:MM)
     const etd = extractETDFromRoute(routeLine);
     if (!etd) return alert("ETD not found in route line!");
     console.log("🕒 ETD detected:", etd);
@@ -644,27 +666,45 @@ async function processCrew() {
     console.log("===== FLIGHT JSON DEBUG =====");
     console.log(
       JSON.stringify(
-        { flight, route: routeLine, acftReg: reg, etd, pdfDate, crew: result.crew },
+        {
+          flight,
+          route: routeLine,
+          legs,
+          acftReg: reg,
+          etd,
+          pdfDate,
+          crew: result.crew,
+        },
         null,
         4
       )
     );
 
+    // Crew + Aircraft blocks
     await unmergeCrewAreasSmart();
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(reg);
 
-    // ✅ ONE CALL: flightdata.js OWNS rows 51–54:
+    // ✅ ONE CALL: flightdata.js OWNS rows 51–54
     //    - clears A51:G54 first
-    //    - writes pdfDate + etd + flight
-    //    - applies rules (F51/E52/F52/A52/B52/G52/etc)
-    await window.applyFlightDataRules({ flight, pdfDate, etd });
+    //    - writes date + legs + etd + flight
+    //    - applies rules (times/dates/return)
+    await window.applyFlightDataRules({
+      flight,
+      pdfDate,
+      etd,
+      from: legs.from,
+      to: legs.to,
+    });
 
     window.open(getSheetUrl(), "_blank");
-    alert(`DONE! Crew imported. DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd}`);
+    alert(
+      `DONE! Crew imported. DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | ROUTE: ${legs.from}-${legs.to}`
+    );
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
+
