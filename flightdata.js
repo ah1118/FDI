@@ -3,8 +3,12 @@
    Owns EVERYTHING in rows 51-54 (A:G):
    - Clears first
    - Writes Date/ETD/Flight
-   - Writes LEGS (C51 D51 C52 D52) from FLIGHT_RULES.cells
-   - Applies times + dates
+   - Writes LEGS:
+       Outbound: C51(from) D51(to)
+       Return:   C52(from) D52(to)  (only if addReturn=true)
+   - Rule lookup:
+       1) by flight number
+       2) fallback by legs (from/to) because flight number can change
    - If addReturn=false (JED/MED): NEVER writes anything in row 52
    ===================================================== */
 
@@ -58,7 +62,7 @@ function parseDDMonYYYY(s) {
   const monStr = m[2];
   const yyyy = Number(m[3]);
 
-  const monIndex = MONTHS.findIndex(x => x.toLowerCase() === monStr.toLowerCase());
+  const monIndex = MONTHS.findIndex((x) => x.toLowerCase() === monStr.toLowerCase());
   if (monIndex < 0) return null;
 
   const d = new Date(Date.UTC(yyyy, monIndex, dd));
@@ -147,51 +151,113 @@ async function clearFlightArea() {
 }
 
 // =====================================================
+// RULE PICKER (fallback by legs)
+// =====================================================
+function norm3(x) {
+  return String(x || "").trim().toUpperCase();
+}
+
+// Find a rule whose outbound legs match payload.from/payload.to
+function findRuleByLegs(rules, from, to) {
+  const FROM = norm3(from);
+  const TO = norm3(to);
+  if (!FROM || !TO) return null;
+
+  for (const r of Object.values(rules || {})) {
+    const c51 = norm3(r?.cells?.C51);
+    const d51 = norm3(r?.cells?.D51);
+    if (c51 === FROM && d51 === TO) return r;
+  }
+  return null;
+}
+
+// =====================================================
 // MAIN: One function that owns rows 51-54
-// Call it from app.js AFTER you extracted pdfDate + etd
+// Call it from app.js like:
+// applyFlightDataRules({ flight, pdfDate, etd, from, to })
 // =====================================================
 async function applyFlightDataRules(payload = null) {
-  const flightStr =
-    (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "").toString().trim();
+  const flightStr = (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "")
+    .toString()
+    .trim();
 
   const pdfDateStr = (payload?.pdfDate ?? "").toString().trim(); // "02Feb2026"
-  const etdStr = (payload?.etd ?? "").toString().trim();         // "HH:MM"
+  const etdStr = (payload?.etd ?? "").toString().trim(); // "HH:MM"
 
-  if (!flightStr) return;
+  // legs from PDF (preferred)
+  const fromLeg = norm3(payload?.from);
+  const toLeg = norm3(payload?.to);
+
+  if (!flightStr && (!fromLeg || !toLeg)) return;
+
   const flightNum = Number(flightStr);
-  if (Number.isNaN(flightNum)) return;
+  const hasValidFlightNum = !Number.isNaN(flightNum);
 
   // ✅ STEP 1: CLEAR ALWAYS
   await clearFlightArea();
 
-  // ✅ STEP 2: WRITE BASE VALUES (date + etd + flight)
+  // ✅ STEP 2: WRITE BASE VALUES (date + etd + flight + outbound legs)
+  // A51:B51 merged, writing both is safe
   const baseUpdates = {
     A51: pdfDateStr || "",
     B51: pdfDateStr || "",
+    C51: fromLeg || "",
+    D51: toLeg || "",
     E51: etdStr || "",
-    G51: flightStr,
+    G51: flightStr || "",
   };
   await writeCells(baseUpdates);
 
-  // ✅ STEP 3: APPLY RULES USING OUR NEW BASE VALUES
+  // ✅ STEP 3: CHOOSE RULE
   const RULES = window.FLIGHT_RULES || {};
-  const rule = RULES[flightStr];
+  let rule = flightStr ? RULES[flightStr] : null;
+
+  // fallback by legs if flight number changed
+  if (!rule) rule = findRuleByLegs(RULES, fromLeg, toLeg);
 
   const updates = {}; // only additional updates from rules
 
   if (rule) {
-    // copy all "cells" (including C51/D51/C52/D52 legs)
-    if (rule.cells) Object.assign(updates, rule.cells);
-
-    // ✅ Return enable/disable
     const hasReturn = rule.addReturn === true;
 
-    // ✅ If no return: NEVER write anything in row 52 (including legs)
+    // =========================
+    // LEGS (write outbound/return)
+    // =========================
+    // Outbound: prefer payload legs. If missing, fall back to rule.cells.
+    // Return: only if hasReturn => C52=to, D52=from
+    const ruleC51 = norm3(rule?.cells?.C51);
+    const ruleD51 = norm3(rule?.cells?.D51);
+
+    const OUT_FROM = fromLeg || ruleC51 || "";
+    const OUT_TO = toLeg || ruleD51 || "";
+
+    if (OUT_FROM) updates.C51 = OUT_FROM;
+    if (OUT_TO) updates.D51 = OUT_TO;
+
+    if (hasReturn) {
+      if (OUT_TO) updates.C52 = OUT_TO;
+      if (OUT_FROM) updates.D52 = OUT_FROM;
+    }
+
+    // If your rules also have other cells (like D51 etc), keep them BUT never override our computed legs above
+    if (rule.cells) {
+      // copy remaining cells except C51/D51/C52/D52 (we control those)
+      for (const [k, v] of Object.entries(rule.cells)) {
+        if (k === "C51" || k === "D51" || k === "C52" || k === "D52") continue;
+        updates[k] = v;
+      }
+    }
+
+    // ✅ If no return: NEVER write anything in row 52
     if (!hasReturn) {
       for (const k of Object.keys(updates)) {
         if (k.endsWith("52")) delete updates[k];
       }
     }
+
+    // =========================
+    // TIMES
+    // =========================
 
     // 1) F51 = E51 + flightTime
     let staOutboundHHMM = null;
@@ -209,8 +275,10 @@ async function applyFlightDataRules(payload = null) {
 
     // ✅ Return calculations ONLY if hasReturn
     if (hasReturn) {
-      // 2) G52 = G51 + 1
-      updates.G52 = String(flightNum + 1);
+      // 2) G52 = G51 + 1 (only if flight number valid)
+      if (hasValidFlightNum) {
+        updates.G52 = String(flightNum + 1);
+      }
 
       // 3) E52 = F51 + layoverTime + return date (A52/B52)
       let etdReturnHHMM = null;
@@ -227,7 +295,7 @@ async function applyFlightDataRules(payload = null) {
 
         if (staOutboundMin != null) {
           const crossesMidnight =
-            (staOutboundMin + durationToMinutes(rule.layoverTime)) >= 1440;
+            staOutboundMin + durationToMinutes(rule.layoverTime) >= 1440;
 
           const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
           if (outboundDate) {
