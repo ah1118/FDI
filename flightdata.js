@@ -1,15 +1,13 @@
 /* =====================================================
-   flightdata.js
+   flightdata.js  (UPDATED)
    Owns EVERYTHING in rows 51-54 (A:G):
    - Clears first
    - Writes Date/ETD/STA/Flight
-   - Writes LEGS:
-       Outbound: C51(from) D51(to)
-       Return:   C52(from) D52(to)  (only if addReturn=true)
-   - Rule lookup:
-       1) by flight number
-       2) fallback by legs (from/to) because flight number can change
-   - If addReturn=false: NEVER writes anything in row 52
+   - Supports:
+       ✅ normal round-trip rules
+       ✅ one-way rules (addReturn=false)
+       ✅ multi-leg rules (type:"multi_leg") with days + aliases
+       ✅ flightRuleKey override + dayKey from app.js
    ===================================================== */
 
 // =====================================================
@@ -23,7 +21,7 @@ function parseTimeToMinutes(v) {
   const s = String(v || "").trim();
   if (!s) return null;
 
-  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?$/);
+  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?(?:\+\d+)?$/);
   if (!m) return null;
 
   const hh = Number(m[1]);
@@ -46,6 +44,15 @@ function addDuration(base, add) {
   const baseMin = parseTimeToMinutes(base);
   if (baseMin == null) return null;
   return minutesToHHMM(baseMin + durationToMinutes(add));
+}
+
+// "02:10+1" -> { hhmm:"02:10", plusDays:1 }
+function splitTimePlusDays(t) {
+  const s = String(t || "").trim();
+  if (!s) return { hhmm: "", plusDays: 0 };
+  const m = s.match(/^(\d{1,2}:\d{2})(?:\+(\d+))?$/);
+  if (!m) return { hhmm: s, plusDays: 0 };
+  return { hhmm: m[1], plusDays: Number(m[2] || 0) };
 }
 
 // =====================================================
@@ -151,35 +158,162 @@ async function clearFlightArea() {
 }
 
 // =====================================================
-// RULE PICKER (fallback by legs)
+// RULE PICKER (fallback by legs) + MULTI-LEG SUPPORT
 // =====================================================
 function norm3(x) {
   return String(x || "").trim().toUpperCase();
 }
 
+function resolveDayPattern(rule, dayKey) {
+  if (!rule || rule.type !== "multi_leg") return null;
+
+  const days = rule.days || {};
+  if (!Object.keys(days).length) return null;
+
+  // direct match
+  let pat = days[dayKey] ?? null;
+
+  // alias like FRI:"SUN"
+  const seen = new Set();
+  while (typeof pat === "string" && pat) {
+    if (seen.has(pat)) break;
+    seen.add(pat);
+    pat = days[pat] ?? null;
+  }
+
+  // fallback DEFAULT
+  if (!pat) {
+    pat = days.DEFAULT ?? null;
+    // alias on DEFAULT (rare)
+    while (typeof pat === "string" && pat) pat = days[pat] ?? null;
+  }
+
+  // last fallback: first object day
+  if (!pat) {
+    const firstKey = Object.keys(days).find((k) => typeof days[k] === "object");
+    pat = firstKey ? days[firstKey] : null;
+  }
+
+  return pat && typeof pat === "object" ? pat : null;
+}
+
 // Find a rule whose outbound legs match payload.from/payload.to
-function findRuleByLegs(rules, from, to) {
+function findRuleByLegs(rules, from, to, dayKey) {
   const FROM = norm3(from);
   const TO = norm3(to);
   if (!FROM || !TO) return null;
 
   for (const r of Object.values(rules || {})) {
-    const c51 = norm3(r?.cells?.C51);
-    const d51 = norm3(r?.cells?.D51);
+    if (!r) continue;
+
+    // normal rule
+    if (r.type !== "multi_leg") {
+      const c51 = norm3(r?.cells?.C51);
+      const d51 = norm3(r?.cells?.D51);
+      if (c51 === FROM && d51 === TO) return r;
+      continue;
+    }
+
+    // multi-leg: compare first leg C51/D51 of resolved day pattern
+    const pat = resolveDayPattern(r, dayKey);
+    const c51 = norm3(pat?.cells?.C51);
+    const d51 = norm3(pat?.cells?.D51);
     if (c51 === FROM && d51 === TO) return r;
   }
+
   return null;
+}
+
+// =====================================================
+// MULTI-LEG WRITER (rows 51-54)
+// =====================================================
+function rowCell(col, rowNumber) {
+  return `${col}${rowNumber}`;
+}
+
+async function applyMultiLeg(rule, payload, dayKey) {
+  const pdfDateStr = (payload?.pdfDate ?? "").toString().trim();
+  const baseDateUtc = parseDDMonYYYY(pdfDateStr) || null;
+
+  const pat = resolveDayPattern(rule, dayKey);
+  if (!pat) return;
+
+  const updates = {};
+
+  // always write base header row (A/B date + flight in G51)
+  updates.A51 = pdfDateStr || "";
+  updates.B51 = pdfDateStr || "";
+  updates.G51 = String(payload?.flight ?? "").trim();
+
+  // write the provided pattern cells (C51:D54 etc)
+  if (pat.cells) {
+    for (const [k, v] of Object.entries(pat.cells)) {
+      updates[k] = v;
+    }
+  }
+
+  // write leg times + leg flight numbers (E/F/G per row)
+  const legs = Array.isArray(pat.legs) ? pat.legs : [];
+  let dayOffset = 0;
+  let prevDepMin = null;
+
+  for (let i = 0; i < legs.length && i < 4; i++) {
+    const row = 51 + i;
+    const leg = legs[i] || {};
+
+    const depSplit = splitTimePlusDays(leg.dep);
+    const arrSplit = splitTimePlusDays(leg.arr);
+
+    const depMin = parseTimeToMinutes(depSplit.hhmm);
+    const arrMin = parseTimeToMinutes(arrSplit.hhmm);
+
+    // detect next-day rollover by decreasing departure time
+    if (prevDepMin != null && depMin != null && depMin < prevDepMin) {
+      dayOffset += 1;
+    }
+
+    // explicit +N in dep/arr forces offset
+    dayOffset = Math.max(dayOffset, depSplit.plusDays || 0);
+    dayOffset = Math.max(dayOffset, arrSplit.plusDays || 0);
+
+    // date per row (optional but useful)
+    if (baseDateUtc) {
+      const d = addDaysUTC(baseDateUtc, dayOffset);
+      const ds = formatDDMonYYYY(d);
+      updates[rowCell("A", row)] = ds;
+      updates[rowCell("B", row)] = ds;
+    }
+
+    if (depSplit.hhmm) updates[rowCell("E", row)] = depSplit.hhmm;
+    if (arrSplit.hhmm) updates[rowCell("F", row)] = arrSplit.hhmm;
+
+    // flight per leg
+    if (leg.flight) updates[rowCell("G", row)] = String(leg.flight);
+
+    prevDepMin = depMin;
+    // if arrival is next day explicitly, keep that offset for next row too
+    if (arrSplit.plusDays && arrSplit.plusDays > 0) dayOffset = Math.max(dayOffset, arrSplit.plusDays);
+    // if arrival is earlier than departure (and no +1 given), assume next day
+    if (depMin != null && arrMin != null && arrMin < depMin && arrSplit.plusDays === 0) {
+      dayOffset += 1;
+    }
+  }
+
+  await writeCells(updates);
 }
 
 // =====================================================
 // MAIN: One function that owns rows 51-54
 // Call it from app.js like:
-// applyFlightDataRules({ flight, pdfDate, etd, sta, from, to })
+// applyFlightDataRules({ flight, flightRuleKey, dayKey, pdfDate, etd, sta, from, to })
 // =====================================================
 async function applyFlightDataRules(payload = null) {
   const flightStr = (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "")
     .toString()
     .trim();
+
+  const flightRuleKey = (payload?.flightRuleKey ?? "").toString().trim(); // can be "1426_MON"
+  const dayKey = (payload?.dayKey ?? "").toString().trim().toUpperCase(); // SUN/MON/...
 
   const pdfDateStr = (payload?.pdfDate ?? "").toString().trim(); // "02Feb2026"
   const etdStr = (payload?.etd ?? "").toString().trim();         // "HH:MM"
@@ -194,30 +328,40 @@ async function applyFlightDataRules(payload = null) {
   const flightNum = Number(flightStr);
   const hasValidFlightNum = !Number.isNaN(flightNum);
 
+  const RULES = window.FLIGHT_RULES || {};
+
   // ✅ STEP 1: CLEAR ALWAYS
   await clearFlightArea();
 
-  // ✅ STEP 2: WRITE BASE VALUES (date + legs + etd + sta + flight)
+  // ✅ STEP 2: CHOOSE RULE (priority: flightRuleKey -> flight -> legs fallback)
+  let rule = null;
+  if (flightRuleKey && RULES[flightRuleKey]) rule = RULES[flightRuleKey];
+  else if (flightStr && RULES[flightStr]) rule = RULES[flightStr];
+
+  if (!rule) rule = findRuleByLegs(RULES, fromLeg, toLeg, dayKey);
+
+  // ✅ MULTI-LEG: it owns rows 51–54 by itself
+  if (rule && rule.type === "multi_leg") {
+    await applyMultiLeg(rule, { ...payload, flight: flightStr }, dayKey);
+    console.log("✅ Multi-leg applied:", { flight: flightStr, flightRuleKey, dayKey });
+    return;
+  }
+
+  // ✅ STEP 3: WRITE BASE VALUES (date + legs + etd + sta + flight)
   const baseUpdates = {
     A51: pdfDateStr || "",
     B51: pdfDateStr || "",
     C51: fromLeg || "",
     D51: toLeg || "",
     E51: etdStr || "",
-    F51: staStr || "",   // ✅ STA from PDF goes here
+    F51: staStr || "",   // STA from PDF goes here
     G51: flightStr || "",
   };
   await writeCells(baseUpdates);
 
-  // ✅ STEP 3: CHOOSE RULE
-  const RULES = window.FLIGHT_RULES || {};
-  let rule = flightStr ? RULES[flightStr] : null;
+  const updates = {}; // additional updates from rules
 
-  // fallback by legs if flight number changed
-  if (!rule) rule = findRuleByLegs(RULES, fromLeg, toLeg);
-
-  const updates = {}; // only additional updates from rules
-
+  // ✅ STEP 4: APPLY NORMAL RULES (round-trip / one-way)
   if (rule) {
     const hasReturn = rule.addReturn === true;
 
@@ -267,7 +411,7 @@ async function applyFlightDataRules(payload = null) {
     }
 
     if (staOutboundHHMM) {
-      updates.F51 = staOutboundHHMM; // ✅ always set F51 (PDF or computed)
+      updates.F51 = staOutboundHHMM;
       staOutboundMin = parseTimeToMinutes(staOutboundHHMM);
     }
 
@@ -318,6 +462,8 @@ async function applyFlightDataRules(payload = null) {
   console.log("✅ Flight area updated (A51:G54 owned by flightdata.js):", {
     ...baseUpdates,
     ...updates,
+    flightRuleKey,
+    dayKey,
   });
 }
 
