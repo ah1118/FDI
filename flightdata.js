@@ -8,7 +8,7 @@
        ✅ one-way rules (addReturn=false)
        ✅ multi-leg rules (type:"multi_leg") with days + aliases
        ✅ flightRuleKey override + dayKey from app.js
-   - ✅ FIXED: Return date +1 when return ETD crosses midnight
+   - ✅ FIXED: Return date correct even when outbound STA is next day
    ===================================================== */
 
 // =====================================================
@@ -22,6 +22,7 @@ function parseTimeToMinutes(v) {
   const s = String(v || "").trim();
   if (!s) return null;
 
+  // accepts "HH:MM" and also ignores any "+N" suffix safely
   const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?(?:\+\d+)?$/);
   if (!m) return null;
 
@@ -171,10 +172,8 @@ function resolveDayPattern(rule, dayKey) {
   const days = rule.days || {};
   if (!Object.keys(days).length) return null;
 
-  // direct match
   let pat = days[dayKey] ?? null;
 
-  // alias like FRI:"SUN"
   const seen = new Set();
   while (typeof pat === "string" && pat) {
     if (seen.has(pat)) break;
@@ -182,13 +181,11 @@ function resolveDayPattern(rule, dayKey) {
     pat = days[pat] ?? null;
   }
 
-  // fallback DEFAULT
   if (!pat) {
     pat = days.DEFAULT ?? null;
     while (typeof pat === "string" && pat) pat = days[pat] ?? null;
   }
 
-  // last fallback: first object day
   if (!pat) {
     const firstKey = Object.keys(days).find((k) => typeof days[k] === "object");
     pat = firstKey ? days[firstKey] : null;
@@ -197,7 +194,6 @@ function resolveDayPattern(rule, dayKey) {
   return pat && typeof pat === "object" ? pat : null;
 }
 
-// Find a rule whose outbound legs match payload.from/payload.to
 function findRuleByLegs(rules, from, to, dayKey) {
   const FROM = norm3(from);
   const TO = norm3(to);
@@ -206,7 +202,6 @@ function findRuleByLegs(rules, from, to, dayKey) {
   for (const r of Object.values(rules || {})) {
     if (!r) continue;
 
-    // normal rule
     if (r.type !== "multi_leg") {
       const c51 = norm3(r?.cells?.C51);
       const d51 = norm3(r?.cells?.D51);
@@ -214,7 +209,6 @@ function findRuleByLegs(rules, from, to, dayKey) {
       continue;
     }
 
-    // multi-leg: compare first leg C51/D51 of resolved day pattern
     const pat = resolveDayPattern(r, dayKey);
     const c51 = norm3(pat?.cells?.C51);
     const d51 = norm3(pat?.cells?.D51);
@@ -236,12 +230,10 @@ async function applyMultiLeg(rule, payload, dayKey) {
 
   const updates = {};
 
-  // Base header
   updates.A51 = pdfDateStr || "";
   updates.B51 = pdfDateStr || "";
   updates.G51 = String(payload?.flight ?? "").trim();
 
-  // Pattern cells
   if (pat.cells) {
     for (const [k, v] of Object.entries(pat.cells)) updates[k] = v;
   }
@@ -261,19 +253,15 @@ async function applyMultiLeg(rule, payload, dayKey) {
     const depMin = parseTimeToMinutes(depSplit.hhmm);
     const arrMin = parseTimeToMinutes(arrSplit.hhmm);
 
-    // rollover: next departure earlier than previous departure => next day
     if (prevDepMin != null && depMin != null && depMin < prevDepMin) dayOffset += 1;
 
-    // explicit +N means "at least N days after base"
     if (depSplit.plusDays > dayOffset) dayOffset = depSplit.plusDays;
     if (arrSplit.plusDays > dayOffset) dayOffset = arrSplit.plusDays;
 
-    // if arrival earlier than departure and no explicit +N => arrival next day
     if (depMin != null && arrMin != null && arrMin < depMin && arrSplit.plusDays === 0) {
       dayOffset += 1;
     }
 
-    // row date
     if (baseDateUtc) {
       const d = addDaysUTC(baseDateUtc, dayOffset);
       const ds = formatDDMonYYYY(d);
@@ -292,23 +280,20 @@ async function applyMultiLeg(rule, payload, dayKey) {
 }
 
 // =====================================================
-// MAIN: One function that owns rows 51-54
-// Call it from app.js like:
-// applyFlightDataRules({ flight, flightRuleKey, dayKey, pdfDate, etd, sta, from, to })
+// MAIN
 // =====================================================
 async function applyFlightDataRules(payload = null) {
   const flightStr = (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "")
     .toString()
     .trim();
 
-  const flightRuleKey = (payload?.flightRuleKey ?? "").toString().trim(); // can be "1426_MON"
-  const dayKey = (payload?.dayKey ?? "").toString().trim().toUpperCase(); // SUN/MON/...
+  const flightRuleKey = (payload?.flightRuleKey ?? "").toString().trim();
+  const dayKey = (payload?.dayKey ?? "").toString().trim().toUpperCase();
 
-  const pdfDateStr = (payload?.pdfDate ?? "").toString().trim(); // "02Feb2026"
-  const etdStr = (payload?.etd ?? "").toString().trim();         // "HH:MM"
-  const staStr = (payload?.sta ?? "").toString().trim();         // "HH:MM"
+  const pdfDateStr = (payload?.pdfDate ?? "").toString().trim();
+  const etdStr = (payload?.etd ?? "").toString().trim();
+  const staStr = (payload?.sta ?? "").toString().trim();
 
-  // legs from PDF (preferred)
   const fromLeg = norm3(payload?.from);
   const toLeg = norm3(payload?.to);
 
@@ -319,23 +304,19 @@ async function applyFlightDataRules(payload = null) {
 
   const RULES = window.FLIGHT_RULES || {};
 
-  // ✅ STEP 1: CLEAR ALWAYS
   await clearFlightArea();
 
-  // ✅ STEP 2: CHOOSE RULE (priority: flightRuleKey -> flight -> legs fallback)
   let rule = null;
   if (flightRuleKey && RULES[flightRuleKey]) rule = RULES[flightRuleKey];
   else if (flightStr && RULES[flightStr]) rule = RULES[flightStr];
   if (!rule) rule = findRuleByLegs(RULES, fromLeg, toLeg, dayKey);
 
-  // ✅ MULTI-LEG owns rows 51–54
   if (rule && rule.type === "multi_leg") {
     await applyMultiLeg(rule, { ...payload, flight: flightStr }, dayKey);
     console.log("✅ Multi-leg applied:", { flight: flightStr, flightRuleKey, dayKey });
     return;
   }
 
-  // ✅ STEP 3: BASE ROW 51
   const baseUpdates = {
     A51: pdfDateStr || "",
     B51: pdfDateStr || "",
@@ -349,11 +330,9 @@ async function applyFlightDataRules(payload = null) {
 
   const updates = {};
 
-  // ✅ STEP 4: NORMAL RULES
   if (rule) {
     const hasReturn = rule.addReturn === true;
 
-    // legs
     const ruleC51 = norm3(rule?.cells?.C51);
     const ruleD51 = norm3(rule?.cells?.D51);
 
@@ -368,7 +347,6 @@ async function applyFlightDataRules(payload = null) {
       if (OUT_FROM) updates.D52 = OUT_FROM;
     }
 
-    // copy remaining cells except those we control
     if (rule.cells) {
       for (const [k, v] of Object.entries(rule.cells)) {
         if (k === "C51" || k === "D51" || k === "C52" || k === "D52") continue;
@@ -376,18 +354,13 @@ async function applyFlightDataRules(payload = null) {
       }
     }
 
-    // if no return: never write row 52
     if (!hasReturn) {
       for (const k of Object.keys(updates)) {
         if (k.endsWith("52")) delete updates[k];
       }
     }
 
-    // ================
-    // TIMES
-    // ================
-
-    // F51 = STA (from PDF) OR computed from E51 + flightTime
+    // ---- TIMES ----
     let staOutboundHHMM = staStr || null;
 
     if (!staOutboundHHMM && rule.flightTime) {
@@ -398,32 +371,41 @@ async function applyFlightDataRules(payload = null) {
     if (staOutboundHHMM) updates.F51 = staOutboundHHMM;
 
     if (hasReturn) {
-      // G52 = G51 + 1
       if (hasValidFlightNum) updates.G52 = String(flightNum + 1);
 
-      // E52 = F51 + layoverTime
       let etdReturnHHMM = null;
 
       if (rule.layoverTime) {
+        const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
+        const etdOutboundForCalc = etdStr || (await readCell("E51"));
         const staForCalc = staOutboundHHMM ?? (await readCell("F51"));
+
         etdReturnHHMM = addDuration(staForCalc, rule.layoverTime);
         if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
 
-        // ✅ FIX: Return date +1 if return ETD clock-time < outbound STA clock-time
-        const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
+        // ✅ CORRECT DATE FIX (handles STA next-day properly)
+        const etdMin = parseTimeToMinutes(etdOutboundForCalc);
         const staMin = parseTimeToMinutes(staForCalc);
-        const retEtdMin = parseTimeToMinutes(etdReturnHHMM);
 
-        if (outboundDate && staMin != null && retEtdMin != null) {
-          const dayOffset = (retEtdMin < staMin) ? 1 : 0;
-          const returnDate = addDaysUTC(outboundDate, dayOffset);
+        if (outboundDate && etdMin != null && staMin != null) {
+          const layoverMin = durationToMinutes(rule.layoverTime);
+
+          // arrival is next day if STA clock-time < ETD clock-time
+          const arrivalDayOffset = (staMin < etdMin) ? 1 : 0;
+
+          // absolute minutes since outbound date start
+          const absStaMin = arrivalDayOffset * 1440 + staMin;
+          const absReturnEtdMin = absStaMin + layoverMin;
+
+          const returnDayOffset = Math.floor(absReturnEtdMin / 1440);
+          const returnDate = addDaysUTC(outboundDate, returnDayOffset);
           const returnDateStr = formatDDMonYYYY(returnDate);
+
           updates.A52 = returnDateStr;
           updates.B52 = returnDateStr;
         }
       }
 
-      // F52 = E52 + returnFlightTime
       if (rule.returnFlightTime) {
         const etd = etdReturnHHMM ?? (await readCell("E52"));
         const staReturn = addDuration(etd, rule.returnFlightTime);
