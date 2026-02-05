@@ -1,26 +1,9 @@
 /* =====================================================
    flightdata.js
-
-   Outbound (row 51):
-     Date:  A51:B51 (merged)
-     STD:   E51
-     STA:   F51
-     N°VOL: G51
-
-   Return (row 52):
-     Date:  A52:B52 (merged)
-     STD:   E52
-     STA:   F52
-     N°VOL: G52
-
-   Logic:
-     F51 = E51 + flightTime
-     E52 = F51 + layoverTime
-     if (F51 + layover crosses midnight) return date = outbound date + 1 else same date
-     F52 = E52 + returnFlightTime
-
-   NEW:
-     Always CLEAR rows 51–54 (A:G) as FIRST step.
+   Owns EVERYTHING in rows 51-54 (A:G):
+   - Clears first
+   - Writes Date/ETD/Flight
+   - Applies flight rules
    ===================================================== */
 
 // =====================================================
@@ -96,19 +79,8 @@ function addDaysUTC(dateUtc, days) {
 }
 
 // =====================================================
-// SHEETS IO
+// SHEETS IO (needs getAccessToken + fetchJSON from app.js)
 // =====================================================
-async function readCell(cell) {
-  const token = await getAccessToken();
-
-  const res = await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${SHEET_TITLE}!${cell}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-
-  return res.values?.[0]?.[0] ?? "";
-}
-
 async function writeCells(cells) {
   const token = await getAccessToken();
 
@@ -135,18 +107,29 @@ async function writeCells(cells) {
   );
 }
 
+async function readCell(cell) {
+  const token = await getAccessToken();
+
+  const res = await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${SHEET_TITLE}!${cell}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  return res.values?.[0]?.[0] ?? "";
+}
+
 // =====================================================
-// CLEAR ROWS 51–54 (A:G)  ✅ ALWAYS FIRST STEP
+// CLEAR ROWS 51–54 (A:G)  ✅ ALWAYS FIRST
 // =====================================================
-async function clearFlightRows() {
+async function clearFlightArea() {
   const token = await getAccessToken();
 
   const ranges = [
-    "A51:G51",
-    "A52:G52",
-    "A53:G53",
-    "A54:G54",
-  ].map(r => `${SHEET_TITLE}!${r}`);
+    `${SHEET_TITLE}!A51:G51`,
+    `${SHEET_TITLE}!A52:G52`,
+    `${SHEET_TITLE}!A53:G53`,
+    `${SHEET_TITLE}!A54:G54`,
+  ];
 
   await fetchJSON(
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchClear`,
@@ -159,27 +142,41 @@ async function clearFlightRows() {
       body: JSON.stringify({ ranges }),
     }
   );
-
-  console.log("🧹 Cleared rows 51–54 (A:G)");
 }
 
 // =====================================================
-// MAIN LOGIC
+// MAIN: One function that owns rows 51-54
+// Call it from app.js AFTER you extracted pdfDate + etd
 // =====================================================
-async function applyFlightDataRules() {
-  // ✅ ALWAYS DO THIS FIRST (no matter what)
-  await clearFlightRows();
+async function applyFlightDataRules(payload = null) {
+  const flightStr =
+    (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "").toString().trim();
 
-  const flightStr = (document.getElementById("flightNumber")?.value || "").trim();
+  const pdfDateStr = (payload?.pdfDate ?? "").toString().trim(); // "02Feb2026"
+  const etdStr = (payload?.etd ?? "").toString().trim();         // "HH:MM"
+
   if (!flightStr) return;
-
   const flightNum = Number(flightStr);
   if (Number.isNaN(flightNum)) return;
 
+  // ✅ STEP 1: CLEAR ALWAYS
+  await clearFlightArea();
+
+  // ✅ STEP 2: WRITE BASE VALUES (date + etd + flight)
+  // A51:B51 is merged, but writing both is safe
+  const baseUpdates = {
+    A51: pdfDateStr || "",
+    B51: pdfDateStr || "",
+    E51: etdStr || "",
+    G51: flightStr,
+  };
+  await writeCells(baseUpdates);
+
+  // ✅ STEP 3: APPLY RULES USING OUR NEW BASE VALUES
   const RULES = window.FLIGHT_RULES || {};
   const rule = RULES[flightStr];
 
-  const updates = { G51: flightStr };
+  const updates = {}; // only additional updates from rules
 
   if (rule) {
     if (rule.cells) Object.assign(updates, rule.cells);
@@ -189,7 +186,7 @@ async function applyFlightDataRules() {
     let staOutboundMin = null;
 
     if (rule.flightTime) {
-      const etdOutbound = await readCell("E51");
+      const etdOutbound = etdStr || (await readCell("E51"));
       staOutboundHHMM = addDuration(etdOutbound, rule.flightTime);
 
       if (staOutboundHHMM) {
@@ -208,7 +205,7 @@ async function applyFlightDataRules() {
 
     if (rule.layoverTime) {
       if (staOutboundMin == null) {
-        const staFromSheet = await readCell("F51");
+        const staFromSheet = staOutboundHHMM ?? (await readCell("F51"));
         staOutboundMin = parseTimeToMinutes(staFromSheet);
       }
 
@@ -217,16 +214,15 @@ async function applyFlightDataRules() {
       if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
 
       if (staOutboundMin != null) {
-        const crossesMidnight = (staOutboundMin + durationToMinutes(rule.layoverTime)) >= 1440;
+        const crossesMidnight =
+          (staOutboundMin + durationToMinutes(rule.layoverTime)) >= 1440;
 
-        const outboundDateStr = (await readCell("A51")) || (await readCell("B51"));
-        const outboundDate = parseDDMonYYYY(outboundDateStr);
-
+        const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
         if (outboundDate) {
           const returnDate = crossesMidnight ? addDaysUTC(outboundDate, 1) : outboundDate;
           const returnDateStr = formatDDMonYYYY(returnDate);
 
-          updates.A52 = returnDateStr; // merged A52:B52
+          updates.A52 = returnDateStr;
           updates.B52 = returnDateStr;
         }
       }
@@ -241,7 +237,10 @@ async function applyFlightDataRules() {
   }
 
   await writeCells(updates);
-  console.log("✅ Flight rules applied:", updates);
+  console.log("✅ Flight area updated (A51:G54 owned by flightdata.js):", {
+    ...baseUpdates,
+    ...updates,
+  });
 }
 
 window.applyFlightDataRules = applyFlightDataRules;
