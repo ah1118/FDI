@@ -68,13 +68,13 @@ window.FLIGHT_RULES = {
   // 🇸🇦 SAUDI ARABIA — (JED / MED)  ❌ NO RETURN FLIGHTS
 
   "468": { // JED - Jeddah
-    cells: { D51: "JED", C52: "JED" },
+    cells: { D51: "JED" },   // ⬅ no C52
     flightTime: { hours: 5, minutes: 20 },
     addReturn: false,
   },
 
   "326": { // MED - Madinah
-    cells: { D51: "MED", C52: "MED" },
+    cells: { D51: "MED" },   // ⬅ no C52
     flightTime: { hours: 4, minutes: 30 }, // 12:10 → 16:40
     addReturn: false,
   },
