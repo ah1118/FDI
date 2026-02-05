@@ -63,12 +63,6 @@ function extractLegsFromRoute(routeLine) {
   return { from: m[1], to: m[2] };
 }
 
-function extractETDFromRoute(routeLine) {
-  if (!routeLine) return null;
-  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g);
-  return times?.[0] ?? null;
-}
-
 function extractTimesFromRoute(routeLine) {
   if (!routeLine) return { etd: null, sta: null };
 
