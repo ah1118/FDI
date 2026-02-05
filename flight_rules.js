@@ -11,6 +11,14 @@ window.FLIGHT_RULES = {
     addReturn: false,
   },
 
+  "6344": { // OGX - Ouargla (CZL <-> OGX)
+    cells: { C51: "CZL", D51: "OGX" },
+    flightTime: { hours: 1, minutes: 15 },       // 22:30 -> 23:45
+    layoverTime: { hours: 1, minutes: 0 },        // 23:45 -> 00:45 (crosses midnight)
+    returnFlightTime: { hours: 1, minutes: 10 },  // 00:45 -> 01:55
+    addReturn: true,
+  },
+
   "6346": { // CBH - Béchar
     cells: { C51: "CZL", D51: "CBH", C52: "CBH", D52: "CZL" },
     flightTime: { hours: 1, minutes: 35 },
