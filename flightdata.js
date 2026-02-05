@@ -21,7 +21,7 @@ function parseTimeToMinutes(v) {
   const s = String(v || "").trim();
   if (!s) return null;
 
-  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?(?:\+\d+)?$/);
+  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{2})?$/);
   if (!m) return null;
 
   const hh = Number(m[1]);
@@ -240,20 +240,20 @@ async function applyMultiLeg(rule, payload, dayKey) {
 
   const updates = {};
 
-  // always write base header row (A/B date + flight in G51)
+  // Base header
   updates.A51 = pdfDateStr || "";
   updates.B51 = pdfDateStr || "";
   updates.G51 = String(payload?.flight ?? "").trim();
 
-  // write the provided pattern cells (C51:D54 etc)
+  // Pattern cells (C51:D54, etc.)
   if (pat.cells) {
     for (const [k, v] of Object.entries(pat.cells)) {
       updates[k] = v;
     }
   }
 
-  // write leg times + leg flight numbers (E/F/G per row)
   const legs = Array.isArray(pat.legs) ? pat.legs : [];
+
   let dayOffset = 0;
   let prevDepMin = null;
 
@@ -267,36 +267,44 @@ async function applyMultiLeg(rule, payload, dayKey) {
     const depMin = parseTimeToMinutes(depSplit.hhmm);
     const arrMin = parseTimeToMinutes(arrSplit.hhmm);
 
-    // detect next-day rollover by decreasing departure time
+    // rollover: next departure earlier than previous departure => next day
     if (prevDepMin != null && depMin != null && depMin < prevDepMin) {
       dayOffset += 1;
     }
 
-    // explicit +N in dep/arr forces offset
-    dayOffset = Math.max(dayOffset, depSplit.plusDays || 0);
-    dayOffset = Math.max(dayOffset, arrSplit.plusDays || 0);
+    // explicit +N means "at least N days after base"
+    if (depSplit.plusDays > dayOffset) dayOffset = depSplit.plusDays;
+    if (arrSplit.plusDays > dayOffset) dayOffset = arrSplit.plusDays;
 
-    // date per row (optional but useful)
+    // row date
     if (baseDateUtc) {
       const d = addDaysUTC(baseDateUtc, dayOffset);
       const ds = formatDDMonYYYY(d);
-      updates[rowCell("A", row)] = ds;
-      updates[rowCell("B", row)] = ds;
+      updates[`A${row}`] = ds;
+      updates[`B${row}`] = ds;
     }
 
-    if (depSplit.hhmm) updates[rowCell("E", row)] = depSplit.hhmm;
-    if (arrSplit.hhmm) updates[rowCell("F", row)] = arrSplit.hhmm;
+    // times
+    if (depSplit.hhmm) updates[`E${row}`] = depSplit.hhmm;
+    if (arrSplit.hhmm) updates[`F${row}`] = arrSplit.hhmm;
 
-    // flight per leg
-    if (leg.flight) updates[rowCell("G", row)] = String(leg.flight);
+    // flight
+    if (leg.flight) updates[`G${row}`] = String(leg.flight);
 
-    prevDepMin = depMin;
-    // if arrival is next day explicitly, keep that offset for next row too
-    if (arrSplit.plusDays && arrSplit.plusDays > 0) dayOffset = Math.max(dayOffset, arrSplit.plusDays);
-    // if arrival is earlier than departure (and no +1 given), assume next day
+    // if arrival is earlier than departure and no explicit +N on arrival => arrival next day
     if (depMin != null && arrMin != null && arrMin < depMin && arrSplit.plusDays === 0) {
       dayOffset += 1;
+
+      // update date again for this row? (optional)
+      if (baseDateUtc) {
+        const d2 = addDaysUTC(baseDateUtc, dayOffset);
+        const ds2 = formatDDMonYYYY(d2);
+        updates[`A${row}`] = ds2;
+        updates[`B${row}`] = ds2;
+      }
     }
+
+    prevDepMin = depMin;
   }
 
   await writeCells(updates);
@@ -338,6 +346,8 @@ async function applyFlightDataRules(payload = null) {
   if (flightRuleKey && RULES[flightRuleKey]) rule = RULES[flightRuleKey];
   else if (flightStr && RULES[flightStr]) rule = RULES[flightStr];
 
+  // NOTE: your current findRuleByLegs signature in the earlier file was (rules, from, to)
+  // If you changed it to accept dayKey, keep this call; otherwise remove dayKey argument.
   if (!rule) rule = findRuleByLegs(RULES, fromLeg, toLeg, dayKey);
 
   // ✅ MULTI-LEG: it owns rows 51–54 by itself
@@ -435,12 +445,17 @@ async function applyFlightDataRules(payload = null) {
         etdReturnHHMM = addDuration(staForCalc, rule.layoverTime);
         if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
 
+        // ✅ FIX: proper midnight handling for return date
         if (staOutboundMin != null) {
-          const crossesMidnight = staOutboundMin + durationToMinutes(rule.layoverTime) >= 1440;
+          const layoverMin = durationToMinutes(rule.layoverTime);
+          const totalMin = staOutboundMin + layoverMin;
+
+          // if totalMin >= 1440 => +1 day (handles all cases cleanly)
+          const dayOffset = Math.floor(totalMin / 1440); // 0 or 1
 
           const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
           if (outboundDate) {
-            const returnDate = crossesMidnight ? addDaysUTC(outboundDate, 1) : outboundDate;
+            const returnDate = addDaysUTC(outboundDate, dayOffset);
             const returnDateStr = formatDDMonYYYY(returnDate);
 
             updates.A52 = returnDateStr;
@@ -466,5 +481,6 @@ async function applyFlightDataRules(payload = null) {
     dayKey,
   });
 }
+
 
 window.applyFlightDataRules = applyFlightDataRules;
