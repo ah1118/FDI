@@ -621,7 +621,15 @@ async function processCrew() {
     const rows = await readPDFRows(file);
     const result = extractCrewFromRows(rows, flight);
     if (!result.found) return alert("Flight not found!");
-    if (result.crew.length === 0) return alert("Flight found but NO WORKING CREW (♯ removed)!");
+
+    // ✅ Remove broken/partial names like "CP ATIETALLAH"
+    result.crew = (result.crew || [])
+      .map((c) => String(c || "").replace(/\s+/g, " ").trim())
+      .filter((c) => c.split(" ").length >= 3);
+
+    if (result.crew.length === 0) {
+      return alert("Flight found but NO WORKING CREW (♯ removed)!");
+    }
 
     // Route line (first line with flight)
     let routeLine = "";
@@ -646,30 +654,44 @@ async function processCrew() {
     if (!reg) return alert("Aircraft registration not found in route line!");
     console.log("✈ ACFT REG detected:", reg);
 
-    // Ensure CP from route line is included (only if it is NOT filtered out by ♯ row)
-    const cpMatch = routeLine.match(
-      /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
-    );
-    if (cpMatch) {
-      const cpFullName = "CP " + cpMatch[1].trim();
-      if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
+    // ✅ CP injection (ONLY if route line is NOT marked with # / ♯)
+    const routeHasDHMark = /[#♯]/.test(routeLine);
+    if (!routeHasDHMark) {
+      const cpMatch = routeLine.match(
+        /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
+      );
+      if (cpMatch) {
+        const cpFullName = ("CP " + cpMatch[1].trim()).replace(/\s+/g, " ").trim();
+        // Only add if it looks like a real full name
+        if (cpFullName.split(" ").length >= 3 && !result.crew.includes(cpFullName)) {
+          result.crew.unshift(cpFullName);
+        }
+      }
+    } else {
+      console.log("⛔ CP injection skipped: route line has #/♯ (DH / not working).");
     }
 
     const flightRuleKey = (flight === "1426" && dayKey === "MON") ? "1426_MON" : flight;
 
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(JSON.stringify({
-      flight,
-      flightRuleKey,
-      dayKey,
-      route: routeLine,
-      legs,
-      acftReg: reg,
-      etd,
-      sta,
-      pdfDate,
-      crew: result.crew,
-    }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          flight,
+          flightRuleKey,
+          dayKey,
+          route: routeLine,
+          legs,
+          acftReg: reg,
+          etd,
+          sta,
+          pdfDate,
+          crew: result.crew,
+        },
+        null,
+        2
+      )
+    );
 
     await unmergeCrewAreasSmart();
     await writePNTtoSheet(result.crew);
@@ -689,7 +711,9 @@ async function processCrew() {
     });
 
     window.open(getSheetUrl(), "_blank");
-    alert(`DONE! DATE: ${pdfDate} | DAY: ${dayKey} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`);
+    alert(
+      `DONE! DATE: ${pdfDate} | DAY: ${dayKey} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`
+    );
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
