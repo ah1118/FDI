@@ -18,6 +18,9 @@
      E52 = F51 + layoverTime
      if (F51 + layover crosses midnight) return date = outbound date + 1 else same date
      F52 = E52 + returnFlightTime
+
+   NEW:
+     Always CLEAR rows 51–54 (A:G) as FIRST step.
    ===================================================== */
 
 // =====================================================
@@ -133,9 +136,40 @@ async function writeCells(cells) {
 }
 
 // =====================================================
+// CLEAR ROWS 51–54 (A:G)  ✅ ALWAYS FIRST STEP
+// =====================================================
+async function clearFlightRows() {
+  const token = await getAccessToken();
+
+  const ranges = [
+    "A51:G51",
+    "A52:G52",
+    "A53:G53",
+    "A54:G54",
+  ].map(r => `${SHEET_TITLE}!${r}`);
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchClear`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ranges }),
+    }
+  );
+
+  console.log("🧹 Cleared rows 51–54 (A:G)");
+}
+
+// =====================================================
 // MAIN LOGIC
 // =====================================================
 async function applyFlightDataRules() {
+  // ✅ ALWAYS DO THIS FIRST (no matter what)
+  await clearFlightRows();
+
   const flightStr = (document.getElementById("flightNumber")?.value || "").trim();
   if (!flightStr) return;
 
