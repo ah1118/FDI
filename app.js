@@ -49,119 +49,17 @@ const DATE_TOP_LEFT     = `${SHEET_TITLE}!A51`;
 // ETD target cell
 const ETD_CELL = `${SHEET_TITLE}!E51`;
 
-async function readPDFRows(file) {
-  const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-  const allRows = [];
-
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
-
-    // group items by Y (row)
-    const rowsMap = new Map();
-
-    for (const it of content.items) {
-      const str = (it.str || "").trim();
-      if (!str) continue;
-
-      const x = it.transform[4];
-      const y = Math.round(it.transform[5]); // bucket by row
-
-      if (!rowsMap.has(y)) rowsMap.set(y, []);
-      rowsMap.get(y).push({ x, str });
-    }
-
-    // sort rows top->bottom and tokens left->right
-    const ys = Array.from(rowsMap.keys()).sort((a, b) => b - a);
-    for (const y of ys) {
-      const tokens = rowsMap.get(y).sort((a, b) => a.x - b.x);
-      allRows.push({ page: p, y, tokens });
-    }
-
-    allRows.push({ page: p, y: null, tokens: [{ x: 0, str: "=== PAGE BREAK ===" }] });
-  }
-
-  return allRows;
-}
+//--------------------------------------------
+// PDF.JS SETUP
+//--------------------------------------------
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
 
 //--------------------------------------------
 // Opens spreadsheet
 //--------------------------------------------
 function getSheetUrl() {
   return `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`;
-}
-
-function extractLegsFromRoute(routeLine) {
-  if (!routeLine) return null;
-  const m = routeLine.toUpperCase().match(/\b([A-Z]{3})\s*-\s*([A-Z]{3})\b/);
-  if (!m) return null;
-  return { from: m[1], to: m[2] };
-}
-
-function extractTimesFromRoute(routeLine) {
-  if (!routeLine) return { etd: null, sta: null };
-
-  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g) || [];
-  // Example: "05:00 06:00 D 05:00"
-  // We want first=ETD, second=STA (ignore the last repeated one)
-  const etd = times[0] ?? null;
-  const sta = times[1] ?? null;
-
-  return { etd, sta };
-}
-
-
-// Ensure the sheet has at least minRows and minCols (A=1, Z=26, AA=27, AB=28)
-async function ensureSheetGrid(minRows, minCols) {
-  const token = await getAccessToken();
-  const sheetId = await getSheetId();
-
-  const metaUrl =
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
-    `?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`;
-
-  const meta = await fetchJSON(metaUrl, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  const sheet = (meta.sheets || []).find((s) => s.properties?.sheetId === sheetId);
-  if (!sheet) throw new Error("Sheet not found for grid resize");
-
-  const curRows = sheet.properties.gridProperties?.rowCount ?? 0;
-  const curCols = sheet.properties.gridProperties?.columnCount ?? 0;
-
-  if (curRows >= minRows && curCols >= minCols) return;
-
-  const newRows = Math.max(curRows, minRows);
-  const newCols = Math.max(curCols, minCols);
-
-  const body = {
-    requests: [
-      {
-        updateSheetProperties: {
-          properties: {
-            sheetId,
-            gridProperties: { rowCount: newRows, columnCount: newCols },
-          },
-          fields: "gridProperties(rowCount,columnCount)",
-        },
-      },
-    ],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }
-  );
-
-  console.log(`✅ Grid resized to rows=${newRows}, cols=${newCols}`);
 }
 
 //--------------------------------------------
@@ -268,9 +166,7 @@ async function getSheetIdByTitle(title) {
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
     `?fields=sheets(properties(sheetId,title))`;
 
-  const data = await fetchJSON(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const data = await fetchJSON(url, { headers: { Authorization: `Bearer ${token}` } });
 
   const sheet = (data.sheets || []).find((s) => s.properties && s.properties.title === title);
   if (!sheet) {
@@ -294,17 +190,11 @@ async function getSheetMerges(sheetId) {
     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}` +
     `?fields=sheets(properties(sheetId,title),merges)`;
 
-  const data = await fetchJSON(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
+  const data = await fetchJSON(url, { headers: { Authorization: `Bearer ${token}` } });
   const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === sheetId);
   return sheet?.merges || [];
 }
 
-//--------------------------------------------
-// SMART UNMERGE (SAFE: WON'T TOUCH ROW 7)
-//--------------------------------------------
 function isFullyInside(inner, outer) {
   const ir1 = inner.startRowIndex ?? 0;
   const ir2 = inner.endRowIndex ?? Infinity;
@@ -352,11 +242,8 @@ async function unmergeCrewAreasSmart() {
 }
 
 //--------------------------------------------
-// PDF READER
+// PDF READERS
 //--------------------------------------------
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
-
 async function readPDF(file) {
   const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
   let finalText = "";
@@ -384,13 +271,46 @@ async function readPDF(file) {
   return finalText;
 }
 
+async function readPDFRows(file) {
+  const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+  const allRows = [];
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+
+    const rowsMap = new Map();
+
+    for (const it of content.items) {
+      const str = (it.str || "").trim();
+      if (!str) continue;
+
+      const x = it.transform[4];
+      const y = Math.round(it.transform[5]);
+
+      if (!rowsMap.has(y)) rowsMap.set(y, []);
+      rowsMap.get(y).push({ x, str });
+    }
+
+    const ys = Array.from(rowsMap.keys()).sort((a, b) => b - a);
+    for (const y of ys) {
+      const tokens = rowsMap.get(y).sort((a, b) => a.x - b.x);
+      allRows.push({ page: p, y, tokens });
+    }
+
+    allRows.push({ page: p, y: null, tokens: [{ x: 0, str: "=== PAGE BREAK ===" }] });
+  }
+
+  return allRows;
+}
+
 //--------------------------------------------
-// PDF DATE DETECTOR (writes PDF report date to A51)
+// DATE PARSING
 //--------------------------------------------
 function formatSheetDate(d) {
   const day = String(d.getDate()).padStart(2, "0");
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return `${day}${months[d.getMonth()]}${d.getFullYear()}`; // 02Feb2026
+  return `${day}${months[d.getMonth()]}${d.getFullYear()}`;
 }
 
 function parseDMY(dd, mm, yyyy) {
@@ -408,34 +328,29 @@ function parseMonTextDate(dayStr, monStr, yearStr) {
 }
 
 function extractReportDate(lines) {
-  const headerZone = lines.slice(0, 200).join(" "); // increase scan area
+  const headerZone = lines.slice(0, 200).join(" ");
 
-  // ✅ NEW: detect 05Feb2026 (DDMonYYYY)
   let m = headerZone.match(/\b(\d{2})(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(\d{4})\b/i);
   if (m) {
     const dd = m[1];
     const mon = m[2];
     const yyyy = m[3];
-    // normalize month case to "Feb"
     const monNorm = mon[0].toUpperCase() + mon.slice(1).toLowerCase();
     return `${dd}${monNorm}${yyyy}`;
   }
 
-  // Prefer: FROM 02/02/2026 to 02/02/2026
   m = headerZone.match(/\bFROM\s+(\d{2})\/(\d{2})\/(\d{4})\s+to\s+(\d{2})\/(\d{2})\/(\d{4})\b/i);
   if (m) {
     const d1 = parseDMY(m[1], m[2], m[3]);
     if (d1) return formatSheetDate(d1);
   }
 
-  // Fallback: Sun , 01 Feb 2026
   m = headerZone.match(/\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*,?\s*(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\b/i);
   if (m) {
     const d2 = parseMonTextDate(m[1], m[2], m[3]);
     if (d2) return formatSheetDate(d2);
   }
 
-  // Last fallback: first dd/mm/yyyy
   m = headerZone.match(/\b(\d{2})\/(\d{2})\/(\d{4})\b/);
   if (m) {
     const d3 = parseDMY(m[1], m[2], m[3]);
@@ -443,267 +358,6 @@ function extractReportDate(lines) {
   }
 
   return null;
-}
-
-
-async function writePDFReportDateToSheet(dateText) {
-  const token = await getAccessToken();
-  if (!dateText) throw new Error("PDF report date not found");
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(DATE_MERGED_RANGE)}:clear`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    }
-  );
-
-  const body = {
-    valueInputOption: "RAW",
-    data: [{ range: DATE_TOP_LEFT, values: [[dateText]] }],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  console.log(`✅ PDF date written to ${DATE_TOP_LEFT}:`, dateText);
-}
-
-//--------------------------------------------
-// CREW EXTRACTOR
-//--------------------------------------------
-function extractCrewFromRows(rows, flightNumber) {
-  const flightRe = new RegExp(`\\b${flightNumber}\\b`);
-  const ROLE_RE = /\b(CP|FO|CC|PC|FA)\b/i;
-  const NOT_WORKING_MARK = /[♯#]/;
-
-  // Build a flat list of tokens with page,x,y,str
-  const toks = [];
-  for (const r of rows) {
-    if (!r || !Array.isArray(r.tokens)) continue;
-    for (const t of r.tokens) {
-      toks.push({ page: r.page, y: r.y, x: t.x, str: String(t.str || "").trim() });
-    }
-  }
-
-  // Find start page / area around the flight number
-  let startTokenIdx = toks.findIndex(t => flightRe.test(t.str));
-  if (startTokenIdx === -1) return { found: false, crew: [] };
-  const startPage = toks[startTokenIdx].page;
-
-  // Consider only tokens on same page as the flight block (usually one page)
-  const pageToks = toks.filter(t => t.page === startPage && t.y != null && t.str);
-
-  // 1) Estimate the "PIC/DH symbols column" X position:
-  //    Find X positions where ♯ appears, take median
-  const sharpXs = pageToks.filter(t => NOT_WORKING_MARK.test(t.str)).map(t => t.x);
-  const picColX = sharpXs.length
-    ? sharpXs.sort((a,b)=>a-b)[Math.floor(sharpXs.length/2)]
-    : null;
-
-  // If we can't find any ♯ on the page, fallback to old behavior
-  if (picColX == null) {
-    // fallback: just extract all crew names like before
-    const crewSet = new Set();
-    const rowText = (r) => r.tokens.map(t => t.str).join(" ").replace(/\s+/g," ").trim();
-
-    let startIdx = rows.findIndex(r => r.page === startPage && r.tokens.some(t => flightRe.test(t.str)));
-    if (startIdx === -1) return { found: false, crew: [] };
-
-    for (let i = startIdx; i < rows.length; i++) {
-      const r = rows[i];
-      if (r.page !== startPage) break;
-      const text = rowText(r);
-      if (!ROLE_RE.test(text)) continue;
-
-      const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
-      let m;
-      while ((m = fullRegex.exec(text)) !== null) {
-        crewSet.add(`${m[1].toUpperCase()} ${m[2].trim()}`);
-      }
-    }
-    return { found: true, crew: [...crewSet] };
-  }
-
-  // 2) Build helper to detect ♯ near a crew row:
-  //    same page, x close to picColX, y within tolerance
-  const Y_TOL = 2;     // PDF.js row rounding noise
-  const X_TOL = 30;    // how wide the PIC/DH column area is
-
-  function hasSharpNearY(y) {
-    return pageToks.some(t =>
-      NOT_WORKING_MARK.test(t.str) &&
-      Math.abs(t.y - y) <= Y_TOL &&
-      Math.abs(t.x - picColX) <= X_TOL
-    );
-  }
-
-  // 3) Extract crew: take crew rows and skip if sharp near that row Y
-  const crewSet = new Set();
-
-  // Find the first row in `rows` (same page) that contains flight number
-  let startIdx = rows.findIndex(r => r.page === startPage && r.tokens.some(t => flightRe.test(t.str)));
-  if (startIdx === -1) return { found: false, crew: [] };
-
-  const rowText = (r) => r.tokens.map(t => t.str).join(" ").replace(/\s+/g, " ").trim();
-
-  for (let i = startIdx; i < rows.length; i++) {
-    const r = rows[i];
-    if (r.page !== startPage) break;
-    if (r.y == null) continue;
-
-    const text = rowText(r);
-    if (!ROLE_RE.test(text)) continue;
-
-    // ✅ Skip this row if ♯ is aligned in PIC/DH column near same Y
-    if (hasSharpNearY(r.y)) continue;
-
-    const fullRegex =
-      /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
-
-    let m;
-    while ((m = fullRegex.exec(text)) !== null) {
-      crewSet.add(`${m[1].toUpperCase()} ${m[2].trim()}`);
-    }
-  }
-
-  return { found: true, crew: [...crewSet] };
-}
-
-//--------------------------------------------
-// WRITE CREW
-//--------------------------------------------
-async function writePNTtoSheet(crew) {
-  const token = await getAccessToken();
-  const pnt = crew.filter((c) => c.startsWith("CP ") || c.startsWith("FO "));
-  const textBlock = pnt.join("\n");
-
-  const body = {
-    valueInputOption: "RAW",
-    data: [{ range: `${SHEET_TITLE}!A8`, values: [[textBlock]] }],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-}
-
-async function writePNCtoSheet(crew) {
-  const token = await getAccessToken();
-  const pnc = crew.filter((c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA "));
-  const textBlock = pnc.join("\n");
-
-  const body = {
-    valueInputOption: "RAW",
-    data: [{ range: `${SHEET_TITLE}!H8`, values: [[textBlock]] }],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-}
-
-//--------------------------------------------
-// ACFT REG NORMALIZATION
-//--------------------------------------------
-function normalizeAcftReg(raw) {
-  if (!raw) return "";
-  const s = String(raw).toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-  if (s.length >= 5) {
-    const a = s.slice(0, 2);
-    const b = s.slice(2, 5);
-    return `${a}-${b}`;
-  }
-  return raw.toUpperCase();
-}
-
-function extractAcftRegFromRoute(routeLine) {
-  const m = routeLine.toUpperCase().match(/\b([A-Z0-9]{2})[-\s]?([A-Z0-9]{3})\b/);
-  if (!m) return null;
-  return `${m[1]}-${m[2]}`;
-}
-
-//--------------------------------------------
-// WRITE AIRCRAFT REG
-//--------------------------------------------
-async function writeAircraftReg(acftRegRaw) {
-  const token = await getAccessToken();
-  const acftReg = normalizeAcftReg(acftRegRaw);
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(ACFT_MERGED_RANGE)}:clear`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    }
-  );
-
-  const template = "PREVU:123456---------------------REEL:123456";
-  const dashRun = (template.match(/-+/) || [""])[0];
-  const gapSpaces = " ".repeat(dashRun.length);
-
-  const newText = template
-    .split("123456").join(acftReg)
-    .replace(dashRun, gapSpaces);
-
-  const body = {
-    valueInputOption: "RAW",
-    data: [{ range: ACFT_TOP_LEFT, values: [[newText]] }],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  console.log("✅ ACFT merged updated. TEXT:", newText);
-}
-
-//--------------------------------------------
-// ETD
-//--------------------------------------------
-
-async function writeETDToSheet(etd) {
-  const token = await getAccessToken();
-  if (!etd) throw new Error("ETD is empty (not found)");
-
-  const body = {
-    valueInputOption: "RAW",
-    data: [{ range: ETD_CELL, values: [[etd]] }],
-  };
-
-  await fetchJSON(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  console.log(`✅ ETD written to ${ETD_CELL}:`, etd);
 }
 
 function parseSheetDateTextToDate(dateText) {
@@ -732,6 +386,211 @@ function getDayKeyFromDate(d) {
 }
 
 //--------------------------------------------
+// ROUTE / TIMES / REG
+//--------------------------------------------
+function extractLegsFromRoute(routeLine) {
+  if (!routeLine) return null;
+  const m = routeLine.toUpperCase().match(/\b([A-Z]{3})\s*-\s*([A-Z]{3})\b/);
+  if (!m) return null;
+  return { from: m[1], to: m[2] };
+}
+
+function extractTimesFromRoute(routeLine) {
+  if (!routeLine) return { etd: null, sta: null };
+  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g) || [];
+  return { etd: times[0] ?? null, sta: times[1] ?? null };
+}
+
+function extractAcftRegFromRoute(routeLine) {
+  const m = routeLine.toUpperCase().match(/\b([A-Z0-9]{2})[-\s]?([A-Z0-9]{3})\b/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}`;
+}
+
+function normalizeAcftReg(raw) {
+  if (!raw) return "";
+  const s = String(raw).toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
+  if (s.length >= 5) return `${s.slice(0,2)}-${s.slice(2,5)}`;
+  return raw.toUpperCase();
+}
+
+//--------------------------------------------
+// WRITE CREW / ACFT
+//--------------------------------------------
+async function writePNTtoSheet(crew) {
+  const token = await getAccessToken();
+  const pnt = crew.filter((c) => c.startsWith("CP ") || c.startsWith("FO "));
+  const textBlock = pnt.join("\n");
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        valueInputOption: "RAW",
+        data: [{ range: `${SHEET_TITLE}!A8`, values: [[textBlock]] }],
+      }),
+    }
+  );
+}
+
+async function writePNCtoSheet(crew) {
+  const token = await getAccessToken();
+  const pnc = crew.filter((c) => c.startsWith("CC ") || c.startsWith("PC ") || c.startsWith("FA "));
+  const textBlock = pnc.join("\n");
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        valueInputOption: "RAW",
+        data: [{ range: `${SHEET_TITLE}!H8`, values: [[textBlock]] }],
+      }),
+    }
+  );
+}
+
+async function writeAircraftReg(acftRegRaw) {
+  const token = await getAccessToken();
+  const acftReg = normalizeAcftReg(acftRegRaw);
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(ACFT_MERGED_RANGE)}:clear`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }
+  );
+
+  const template = "PREVU:123456---------------------REEL:123456";
+  const dashRun = (template.match(/-+/) || [""])[0];
+  const gapSpaces = " ".repeat(dashRun.length);
+
+  const newText = template.split("123456").join(acftReg).replace(dashRun, gapSpaces);
+
+  await fetchJSON(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        valueInputOption: "RAW",
+        data: [{ range: ACFT_TOP_LEFT, values: [[newText]] }],
+      }),
+    }
+  );
+}
+
+//--------------------------------------------
+// CREW EXTRACTOR (FIXED ♯/#) + STOP AT NEXT FLIGHT
+//--------------------------------------------
+function extractCrewFromRows(rows, flightNumber) {
+  const flightRe = new RegExp(`\\b${flightNumber}\\b`);
+  const ROLE_RE = /\b(CP|FO|CC|PC|FA)\b/i;
+  const NOT_WORKING_MARK = /[♯#]/;
+
+  // Flatten tokens (page,y,x,str)
+  const toks = [];
+  for (const r of rows) {
+    if (!r || !Array.isArray(r.tokens)) continue;
+    for (const t of r.tokens) {
+      toks.push({ page: r.page, y: r.y, x: t.x, str: String(t.str || "").trim() });
+    }
+  }
+
+  // Locate the flight occurrence
+  const startTokenIdx = toks.findIndex((t) => flightRe.test(t.str));
+  if (startTokenIdx === -1) return { found: false, crew: [] };
+  const startPage = toks[startTokenIdx].page;
+
+  const pageToks = toks.filter((t) => t.page === startPage && t.y != null && t.str);
+
+  // Estimate PIC/DH symbol column X by median ♯/# positions
+  const sharpXs = pageToks.filter((t) => NOT_WORKING_MARK.test(t.str)).map((t) => t.x);
+  const picColX = sharpXs.length
+    ? sharpXs.sort((a, b) => a - b)[Math.floor(sharpXs.length / 2)]
+    : null;
+
+  // Helper: build row text
+  const rowText = (r) => r.tokens.map((t) => t.str).join(" ").replace(/\s+/g, " ").trim();
+
+  // Find first row containing flight number on that page
+  const startIdx = rows.findIndex((r) => r.page === startPage && r.tokens.some((t) => flightRe.test(t.str)));
+  if (startIdx === -1) return { found: false, crew: [] };
+
+  // If no ♯ exists on the page, just extract crew normally (no filtering possible)
+  if (picColX == null) {
+    const crewSet = new Set();
+
+    for (let i = startIdx; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.page !== startPage) break;
+
+      const text = rowText(r);
+
+      // stop on next flight block
+      if (i !== startIdx && /\b\d{3,5}\b/.test(text) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(text)) break;
+
+      if (!ROLE_RE.test(text)) continue;
+
+      const fullRegex =
+        /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
+
+      let m;
+      while ((m = fullRegex.exec(text)) !== null) {
+        crewSet.add(`${m[1].toUpperCase()} ${m[2].trim()}`);
+      }
+    }
+
+    return { found: true, crew: [...crewSet] };
+  }
+
+  // Tolerances (robust PDFs)
+  const Y_TOL = 4;
+  const X_TOL = 50;
+
+  function hasSharpNearY(y) {
+    return pageToks.some((t) =>
+      NOT_WORKING_MARK.test(t.str) &&
+      Math.abs(t.y - y) <= Y_TOL &&
+      Math.abs(t.x - picColX) <= X_TOL
+    );
+  }
+
+  const crewSet = new Set();
+
+  for (let i = startIdx; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.page !== startPage) break;
+    if (r.y == null) continue;
+
+    const text = rowText(r);
+
+    // ✅ stop on next flight block (super important)
+    if (i !== startIdx && /\b\d{3,5}\b/.test(text) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(text)) break;
+
+    if (!ROLE_RE.test(text)) continue;
+
+    // ✅ Skip row if ♯/# is aligned in PIC/DH column
+    if (hasSharpNearY(r.y)) continue;
+
+    const fullRegex =
+      /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
+
+    let m;
+    while ((m = fullRegex.exec(text)) !== null) {
+      crewSet.add(`${m[1].toUpperCase()} ${m[2].trim()}`);
+    }
+  }
+
+  return { found: true, crew: [...crewSet] };
+}
+
+//--------------------------------------------
 // MAIN
 //--------------------------------------------
 async function processCrew() {
@@ -742,31 +601,29 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
-    // ✅ Use your old text reader for date/route extraction
+    // Text read (header/date + route line)
     const raw = await readPDF(file);
     const lines = raw
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // ✅ PDF report date (supports 05Feb2026 кип other formats)
     const pdfDate = extractReportDate(lines);
     if (!pdfDate) return alert("PDF report date not found in header!");
     console.log("📅 PDF date detected:", pdfDate);
 
-    // ✅ dayKey from pdfDate (SUN/MON/...)
     const pdfDateObj = parseSheetDateTextToDate(pdfDate);
     if (!pdfDateObj) return alert("Cannot parse pdfDate (expected like 02Feb2026)");
     const dayKey = getDayKeyFromDate(pdfDateObj);
     console.log("🗓 Day key:", dayKey);
 
-    // ✅ ROW-BASED CREW (FIX ♯ IN PIC/DH COLUMN)
+    // Row read (crew extraction + ♯/# filtering)
     const rows = await readPDFRows(file);
     const result = extractCrewFromRows(rows, flight);
     if (!result.found) return alert("Flight not found!");
     if (result.crew.length === 0) return alert("Flight found but NO WORKING CREW (♯ removed)!");
 
-    // ✅ Find route line (first line containing flight number)
+    // Route line (first line with flight)
     let routeLine = "";
     for (let i = 0; i < lines.length; i++) {
       if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
@@ -776,23 +633,20 @@ async function processCrew() {
     }
     if (!routeLine) return alert("Route line not found in PDF!");
 
-    // ✅ LEGS from route line (CZL - ALG)
     const legs = extractLegsFromRoute(routeLine);
     if (!legs) return alert("Route legs not found (ex: CZL - ALG)!");
     console.log("🧭 LEGS detected:", legs.from, "->", legs.to);
 
-    // ✅ ETD + STA from route line
     const { etd, sta } = extractTimesFromRoute(routeLine);
     if (!etd) return alert("ETD not found in route line!");
     if (!sta) console.warn("⚠ STA not found (F51 may stay empty)");
     console.log("🕒 ETD:", etd, "| 🛬 STA:", sta);
 
-    // ✅ Aircraft registration
     const reg = extractAcftRegFromRoute(routeLine);
     if (!reg) return alert("Aircraft registration not found in route line!");
     console.log("✈ ACFT REG detected:", reg);
 
-    // ✅ Captain from route line (ensure CP is included)
+    // Ensure CP from route line is included (only if it is NOT filtered out by ♯ row)
     const cpMatch = routeLine.match(
       /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
     );
@@ -801,36 +655,28 @@ async function processCrew() {
       if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
     }
 
-    // ✅ Special override key (your rules use 1426_MON for Monday)
     const flightRuleKey = (flight === "1426" && dayKey === "MON") ? "1426_MON" : flight;
 
     console.log("===== FLIGHT JSON DEBUG =====");
-    console.log(
-      JSON.stringify(
-        {
-          flight,
-          flightRuleKey,
-          dayKey,
-          route: routeLine,
-          legs,
-          acftReg: reg,
-          etd,
-          sta,
-          pdfDate,
-          crew: result.crew,
-        },
-        null,
-        4
-      )
-    );
+    console.log(JSON.stringify({
+      flight,
+      flightRuleKey,
+      dayKey,
+      route: routeLine,
+      legs,
+      acftReg: reg,
+      etd,
+      sta,
+      pdfDate,
+      crew: result.crew,
+    }, null, 2));
 
-    // ✅ Write crew blocks + aircraft reg block
     await unmergeCrewAreasSmart();
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(reg);
 
-    // ✅ ONE CALL: flightdata.js OWNS rows 51–54
+    // flightdata.js owns rows 51–54
     await window.applyFlightDataRules({
       flight,
       flightRuleKey,
@@ -843,12 +689,14 @@ async function processCrew() {
     });
 
     window.open(getSheetUrl(), "_blank");
-    alert(
-      `DONE! DATE: ${pdfDate} | DAY: ${dayKey} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`
-    );
+    alert(`DONE! DATE: ${pdfDate} | DAY: ${dayKey} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`);
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
+
+// expose
+window.processCrew = processCrew;
+
 
