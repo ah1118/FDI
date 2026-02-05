@@ -612,9 +612,31 @@ async function writeETDToSheet(etd) {
   console.log(`✅ ETD written to ${ETD_CELL}:`, etd);
 }
 
-//--------------------------------------------
-// MAIN
-//--------------------------------------------
+function parseSheetDateTextToDate(dateText) {
+  const m = String(dateText || "").match(/^(\d{2})([A-Za-z]{3})(\d{4})$/);
+  if (!m) return null;
+
+  const dd = Number(m[1]);
+  const mon = m[2].toLowerCase();
+  const yyyy = Number(m[3]);
+
+  const months = {
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+  };
+
+  const mm = months[mon];
+  if (mm === undefined) return null;
+
+  const d = new Date(yyyy, mm, dd);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function getDayKeyFromDate(d) {
+  const keys = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  return keys[d.getDay()];
+}
+
 //--------------------------------------------
 // MAIN
 //--------------------------------------------
@@ -638,6 +660,12 @@ async function processCrew() {
     if (!pdfDate) return alert("PDF report date not found in header!");
     console.log("📅 PDF date detected:", pdfDate);
 
+    // ✅ dayKey from pdfDate (SUN/MON/...)
+    const pdfDateObj = parseSheetDateTextToDate(pdfDate);
+    if (!pdfDateObj) return alert("Cannot parse pdfDate (expected like 02Feb2026)");
+    const dayKey = getDayKeyFromDate(pdfDateObj);
+    console.log("🗓 Day key:", dayKey);
+
     // ✅ Find flight & crew
     const result = extractCrew(lines, flight);
     if (!result.found) return alert("Flight not found!");
@@ -659,8 +687,6 @@ async function processCrew() {
     console.log("🧭 LEGS detected:", legs.from, "->", legs.to);
 
     // ✅ ETD + STA from route line
-    // Make sure you added extractTimesFromRoute(routeLine) in your code:
-    // returns { etd, sta } using 1st time as ETD and 2nd time as STA
     const { etd, sta } = extractTimesFromRoute(routeLine);
     if (!etd) return alert("ETD not found in route line!");
     if (!sta) console.warn("⚠ STA not found (F51 may stay empty)");
@@ -680,11 +706,16 @@ async function processCrew() {
       if (!result.crew.includes(cpFullName)) result.crew.unshift(cpFullName);
     }
 
+    // ✅ Special override key (your rules use 1426_MON for Monday)
+    const flightRuleKey = (flight === "1426" && dayKey === "MON") ? "1426_MON" : flight;
+
     console.log("===== FLIGHT JSON DEBUG =====");
     console.log(
       JSON.stringify(
         {
           flight,
+          flightRuleKey,
+          dayKey,
           route: routeLine,
           legs,
           acftReg: reg,
@@ -705,11 +736,10 @@ async function processCrew() {
     await writeAircraftReg(reg);
 
     // ✅ ONE CALL: flightdata.js OWNS rows 51–54
-    // - clears A51:G54
-    // - writes date + legs + ETD + STA + flight
-    // - applies return rules if any
     await window.applyFlightDataRules({
-      flight,
+      flight,        // user input (still write G51)
+      flightRuleKey, // which key to use in FLIGHT_RULES (overrides for special days)
+      dayKey,        // SUN/MON/...
       pdfDate,
       etd,
       sta,
@@ -719,12 +749,10 @@ async function processCrew() {
 
     window.open(getSheetUrl(), "_blank");
     alert(
-      `DONE! DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`
+      `DONE! DATE: ${pdfDate} | DAY: ${dayKey} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`
     );
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
-
-
