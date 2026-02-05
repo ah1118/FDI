@@ -481,46 +481,96 @@ async function writePDFReportDateToSheet(dateText) {
 //--------------------------------------------
 function extractCrewFromRows(rows, flightNumber) {
   const flightRe = new RegExp(`\\b${flightNumber}\\b`);
-
-  // Find the first row that contains the flight number (table row)
-  let startIdx = rows.findIndex(r => r.tokens.some(t => flightRe.test(t.str)));
-  if (startIdx === -1) return { found: false, crew: [] };
-
-  const crewSet = new Set();
-
-  // Helper: build row text
-  const rowText = (r) => r.tokens.map(t => t.str).join(" ").replace(/\s+/g, " ").trim();
-
-  // We assume:
-  // - Crew names are in a middle column region
-  // - PIC/DH marks (♯ / #) are near the right side
-  // So: if a row has a crew role AND has ♯/# anywhere on same row -> skip that crew entry.
   const ROLE_RE = /\b(CP|FO|CC|PC|FA)\b/i;
   const NOT_WORKING_MARK = /[♯#]/;
 
-  // scan downward until next flight block (or page break)
+  // Build a flat list of tokens with page,x,y,str
+  const toks = [];
+  for (const r of rows) {
+    if (!r || !Array.isArray(r.tokens)) continue;
+    for (const t of r.tokens) {
+      toks.push({ page: r.page, y: r.y, x: t.x, str: String(t.str || "").trim() });
+    }
+  }
+
+  // Find start page / area around the flight number
+  let startTokenIdx = toks.findIndex(t => flightRe.test(t.str));
+  if (startTokenIdx === -1) return { found: false, crew: [] };
+  const startPage = toks[startTokenIdx].page;
+
+  // Consider only tokens on same page as the flight block (usually one page)
+  const pageToks = toks.filter(t => t.page === startPage && t.y != null && t.str);
+
+  // 1) Estimate the "PIC/DH symbols column" X position:
+  //    Find X positions where ♯ appears, take median
+  const sharpXs = pageToks.filter(t => NOT_WORKING_MARK.test(t.str)).map(t => t.x);
+  const picColX = sharpXs.length
+    ? sharpXs.sort((a,b)=>a-b)[Math.floor(sharpXs.length/2)]
+    : null;
+
+  // If we can't find any ♯ on the page, fallback to old behavior
+  if (picColX == null) {
+    // fallback: just extract all crew names like before
+    const crewSet = new Set();
+    const rowText = (r) => r.tokens.map(t => t.str).join(" ").replace(/\s+/g," ").trim();
+
+    let startIdx = rows.findIndex(r => r.page === startPage && r.tokens.some(t => flightRe.test(t.str)));
+    if (startIdx === -1) return { found: false, crew: [] };
+
+    for (let i = startIdx; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.page !== startPage) break;
+      const text = rowText(r);
+      if (!ROLE_RE.test(text)) continue;
+
+      const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
+      let m;
+      while ((m = fullRegex.exec(text)) !== null) {
+        crewSet.add(`${m[1].toUpperCase()} ${m[2].trim()}`);
+      }
+    }
+    return { found: true, crew: [...crewSet] };
+  }
+
+  // 2) Build helper to detect ♯ near a crew row:
+  //    same page, x close to picColX, y within tolerance
+  const Y_TOL = 2;     // PDF.js row rounding noise
+  const X_TOL = 30;    // how wide the PIC/DH column area is
+
+  function hasSharpNearY(y) {
+    return pageToks.some(t =>
+      NOT_WORKING_MARK.test(t.str) &&
+      Math.abs(t.y - y) <= Y_TOL &&
+      Math.abs(t.x - picColX) <= X_TOL
+    );
+  }
+
+  // 3) Extract crew: take crew rows and skip if sharp near that row Y
+  const crewSet = new Set();
+
+  // Find the first row in `rows` (same page) that contains flight number
+  let startIdx = rows.findIndex(r => r.page === startPage && r.tokens.some(t => flightRe.test(t.str)));
+  if (startIdx === -1) return { found: false, crew: [] };
+
+  const rowText = (r) => r.tokens.map(t => t.str).join(" ").replace(/\s+/g, " ").trim();
+
   for (let i = startIdx; i < rows.length; i++) {
     const r = rows[i];
+    if (r.page !== startPage) break;
+    if (r.y == null) continue;
+
     const text = rowText(r);
-
-    if (text.includes("=== PAGE BREAK ===")) break;
-
-    // stop when another flight line appears (number + route pattern)
-    // (keep your own stop logic if you prefer)
-    if (i !== startIdx && /\b\d{3,5}\b/.test(text) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(text)) break;
-
     if (!ROLE_RE.test(text)) continue;
 
-    // If ♯/# exists anywhere on same row => treat as NOT working row
-    const isNotWorkingRow = r.tokens.some(t => NOT_WORKING_MARK.test(t.str));
+    // ✅ Skip this row if ♯ is aligned in PIC/DH column near same Y
+    if (hasSharpNearY(r.y)) continue;
 
-    // Extract crew entries from this row text
-    const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
+    const fullRegex =
+      /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
+
     let m;
     while ((m = fullRegex.exec(text)) !== null) {
-      const entry = `${m[1].toUpperCase()} ${m[2].trim()}`;
-      if (isNotWorkingRow) continue; // ✅ skip if row has ♯
-      crewSet.add(entry);
+      crewSet.add(`${m[1].toUpperCase()} ${m[2].trim()}`);
     }
   }
 
