@@ -69,6 +69,18 @@ function extractETDFromRoute(routeLine) {
   return times?.[0] ?? null;
 }
 
+function extractTimesFromRoute(routeLine) {
+  if (!routeLine) return { etd: null, sta: null };
+
+  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g) || [];
+  // Example: "05:00 06:00 D 05:00"
+  // We want first=ETD, second=STA (ignore the last repeated one)
+  const etd = times[0] ?? null;
+  const sta = times[1] ?? null;
+
+  return { etd, sta };
+}
+
 
 // Ensure the sheet has at least minRows and minCols (A=1, Z=26, AA=27, AB=28)
 async function ensureSheetGrid(minRows, minCols) {
@@ -367,12 +379,23 @@ function parseMonTextDate(dayStr, monStr, yearStr) {
 }
 
 function extractReportDate(lines) {
-  const headerZone = lines.slice(0, 80).join(" ");
+  const headerZone = lines.slice(0, 200).join(" "); // increase scan area
+
+  // ✅ NEW: detect 05Feb2026 (DDMonYYYY)
+  let m = headerZone.match(/\b(\d{2})(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(\d{4})\b/i);
+  if (m) {
+    const dd = m[1];
+    const mon = m[2];
+    const yyyy = m[3];
+    // normalize month case to "Feb"
+    const monNorm = mon[0].toUpperCase() + mon.slice(1).toLowerCase();
+    return `${dd}${monNorm}${yyyy}`;
+  }
 
   // Prefer: FROM 02/02/2026 to 02/02/2026
-  let m = headerZone.match(/\bFROM\s+(\d{2})\/(\d{2})\/(\d{4})\s+to\s+(\d{2})\/(\d{2})\/(\d{4})\b/i);
+  m = headerZone.match(/\bFROM\s+(\d{2})\/(\d{2})\/(\d{4})\s+to\s+(\d{2})\/(\d{2})\/(\d{4})\b/i);
   if (m) {
-    const d1 = parseDMY(m[1], m[2], m[3]); // use FROM date
+    const d1 = parseDMY(m[1], m[2], m[3]);
     if (d1) return formatSheetDate(d1);
   }
 
@@ -392,6 +415,7 @@ function extractReportDate(lines) {
 
   return null;
 }
+
 
 async function writePDFReportDateToSheet(dateText) {
   const token = await getAccessToken();
@@ -572,11 +596,6 @@ async function writeAircraftReg(acftRegRaw) {
 //--------------------------------------------
 // ETD
 //--------------------------------------------
-function extractETDFromRoute(routeLine) {
-  if (!routeLine) return null;
-  const times = routeLine.match(/\b([01]\d|2[0-3]):[0-5]\d\b/g);
-  return times && times.length ? times[0] : null;
-}
 
 async function writeETDToSheet(etd) {
   const token = await getAccessToken();
@@ -620,16 +639,17 @@ async function processCrew() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // ✅ PDF report date (DO NOT write here anymore)
+    // ✅ PDF report date (supports 05Feb2026 + other formats)
     const pdfDate = extractReportDate(lines);
     if (!pdfDate) return alert("PDF report date not found in header!");
     console.log("📅 PDF date detected:", pdfDate);
 
+    // ✅ Find flight & crew
     const result = extractCrew(lines, flight);
     if (!result.found) return alert("Flight not found!");
     if (result.crew.length === 0) return alert("Flight found but NO CREW!");
 
-    // Find route line (first line containing flight number)
+    // ✅ Find route line (first line containing flight number)
     let routeLine = "";
     for (let i = 0; i < lines.length; i++) {
       if (new RegExp(`\\b${flight}\\b`).test(lines[i])) {
@@ -639,22 +659,25 @@ async function processCrew() {
     }
     if (!routeLine) return alert("Route line not found in PDF!");
 
-    // ✅ LEGS from route line (CZL - CDG)
+    // ✅ LEGS from route line (CZL - ALG)
     const legs = extractLegsFromRoute(routeLine);
-    if (!legs) return alert("Route legs not found (ex: CZL - CDG)!");
+    if (!legs) return alert("Route legs not found (ex: CZL - ALG)!");
     console.log("🧭 LEGS detected:", legs.from, "->", legs.to);
 
-    // ✅ ETD from route line (first HH:MM)
-    const etd = extractETDFromRoute(routeLine);
+    // ✅ ETD + STA from route line
+    // Make sure you added extractTimesFromRoute(routeLine) in your code:
+    // returns { etd, sta } using 1st time as ETD and 2nd time as STA
+    const { etd, sta } = extractTimesFromRoute(routeLine);
     if (!etd) return alert("ETD not found in route line!");
-    console.log("🕒 ETD detected:", etd);
+    if (!sta) console.warn("⚠ STA not found (F51 may stay empty)");
+    console.log("🕒 ETD:", etd, "| 🛬 STA:", sta);
 
-    // ACFT REG
+    // ✅ Aircraft registration
     const reg = extractAcftRegFromRoute(routeLine);
     if (!reg) return alert("Aircraft registration not found in route line!");
     console.log("✈ ACFT REG detected:", reg);
 
-    // Captain from route line
+    // ✅ Captain from route line (ensure CP is included)
     const cpMatch = routeLine.match(
       /CP\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)(?=\s+[A-Z]|$|\d|P\s)/
     );
@@ -672,6 +695,7 @@ async function processCrew() {
           legs,
           acftReg: reg,
           etd,
+          sta,
           pdfDate,
           crew: result.crew,
         },
@@ -680,31 +704,33 @@ async function processCrew() {
       )
     );
 
-    // Crew + Aircraft blocks
+    // ✅ Write crew blocks + aircraft reg block
     await unmergeCrewAreasSmart();
     await writePNTtoSheet(result.crew);
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(reg);
 
     // ✅ ONE CALL: flightdata.js OWNS rows 51–54
-    //    - clears A51:G54 first
-    //    - writes date + legs + etd + flight
-    //    - applies rules (times/dates/return)
+    // - clears A51:G54
+    // - writes date + legs + ETD + STA + flight
+    // - applies return rules if any
     await window.applyFlightDataRules({
       flight,
       pdfDate,
       etd,
+      sta,
       from: legs.from,
       to: legs.to,
     });
 
     window.open(getSheetUrl(), "_blank");
     alert(
-      `DONE! Crew imported. DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | ROUTE: ${legs.from}-${legs.to}`
+      `DONE! DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd} | STA: ${sta || "??"} | ROUTE: ${legs.from}-${legs.to}`
     );
   } catch (err) {
     console.error("❌ PROCESS FAILED:", err);
     alert("FAILED! Check console for details.");
   }
 }
+
 
