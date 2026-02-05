@@ -49,6 +49,41 @@ const DATE_TOP_LEFT     = `${SHEET_TITLE}!A51`;
 // ETD target cell
 const ETD_CELL = `${SHEET_TITLE}!E51`;
 
+async function readPDFRows(file) {
+  const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+  const allRows = [];
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+
+    // group items by Y (row)
+    const rowsMap = new Map();
+
+    for (const it of content.items) {
+      const str = (it.str || "").trim();
+      if (!str) continue;
+
+      const x = it.transform[4];
+      const y = Math.round(it.transform[5]); // bucket by row
+
+      if (!rowsMap.has(y)) rowsMap.set(y, []);
+      rowsMap.get(y).push({ x, str });
+    }
+
+    // sort rows top->bottom and tokens left->right
+    const ys = Array.from(rowsMap.keys()).sort((a, b) => b - a);
+    for (const y of ys) {
+      const tokens = rowsMap.get(y).sort((a, b) => a.x - b.x);
+      allRows.push({ page: p, y, tokens });
+    }
+
+    allRows.push({ page: p, y: null, tokens: [{ x: 0, str: "=== PAGE BREAK ===" }] });
+  }
+
+  return allRows;
+}
+
 //--------------------------------------------
 // Opens spreadsheet
 //--------------------------------------------
@@ -444,53 +479,48 @@ async function writePDFReportDateToSheet(dateText) {
 //--------------------------------------------
 // CREW EXTRACTOR
 //--------------------------------------------
-function extractCrew(lines, flightNumber) {
-  let flightIndex = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (new RegExp(`\\b${flightNumber}\\b`).test(lines[i])) {
-      flightIndex = i;
-      break;
-    }
-  }
-  if (flightIndex === -1) return { found: false, crew: [] };
+function extractCrewFromRows(rows, flightNumber) {
+  const flightRe = new RegExp(`\\b${flightNumber}\\b`);
+
+  // Find the first row that contains the flight number (table row)
+  let startIdx = rows.findIndex(r => r.tokens.some(t => flightRe.test(t.str)));
+  if (startIdx === -1) return { found: false, crew: [] };
 
   const crewSet = new Set();
-  const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
 
-  // ✅ treat these as "NOT WORKING" markers
-  const NOT_WORKING_MARK = /[♯#]/;  // add more symbols here if needed
+  // Helper: build row text
+  const rowText = (r) => r.tokens.map(t => t.str).join(" ").replace(/\s+/g, " ").trim();
 
-  for (let i = flightIndex + 1; i < lines.length; i++) {
-    let line = (lines[i] || "").trim();
+  // We assume:
+  // - Crew names are in a middle column region
+  // - PIC/DH marks (♯ / #) are near the right side
+  // So: if a row has a crew role AND has ♯/# anywhere on same row -> skip that crew entry.
+  const ROLE_RE = /\b(CP|FO|CC|PC|FA)\b/i;
+  const NOT_WORKING_MARK = /[♯#]/;
 
-    // Stop on next flight line
-    if (i !== flightIndex && /\b\d{3,5}\b/.test(line) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(line)) break;
+  // scan downward until next flight block (or page break)
+  for (let i = startIdx; i < rows.length; i++) {
+    const r = rows[i];
+    const text = rowText(r);
 
-    // Merge broken names
-    if (roleStart.test(line)) {
-      const parts = line.split(" ").filter(Boolean);
-      if (parts.length === 2) {
-        const next = lines[i + 1] ? lines[i + 1].trim() : "";
-        if (/^[A-Za-zÀ-ÖØ-öø-ÿ'.-]+$/.test(next)) {
-          line = line + " " + next;
-          i++;
-        }
-      }
-    }
+    if (text.includes("=== PAGE BREAK ===")) break;
 
-    const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/g;
-    const matches = line.match(fullRegex);
+    // stop when another flight line appears (number + route pattern)
+    // (keep your own stop logic if you prefer)
+    if (i !== startIdx && /\b\d{3,5}\b/.test(text) && /[A-Z]{3}\s*-\s*[A-Z]{3}/.test(text)) break;
 
-    if (matches) {
-      matches.forEach((m) => {
-        const s = m.trim();
+    if (!ROLE_RE.test(text)) continue;
 
-        // ✅ If the crew entry (or its line) contains ♯ => skip it
-        if (NOT_WORKING_MARK.test(s) || NOT_WORKING_MARK.test(line)) return;
+    // If ♯/# exists anywhere on same row => treat as NOT working row
+    const isNotWorkingRow = r.tokens.some(t => NOT_WORKING_MARK.test(t.str));
 
-        // optional: clean extra spaces
-        crewSet.add(s.replace(/\s+/g, " "));
-      });
+    // Extract crew entries from this row text
+    const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'.-]+)*)/g;
+    let m;
+    while ((m = fullRegex.exec(text)) !== null) {
+      const entry = `${m[1].toUpperCase()} ${m[2].trim()}`;
+      if (isNotWorkingRow) continue; // ✅ skip if row has ♯
+      crewSet.add(entry);
     }
   }
 
@@ -662,14 +692,14 @@ async function processCrew() {
     const file = document.getElementById("pdfFile").files[0];
     if (!file) return alert("Upload a PDF");
 
+    // ✅ Use your old text reader for date/route extraction
     const raw = await readPDF(file);
-
     const lines = raw
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // ✅ PDF report date (supports 05Feb2026 + other formats)
+    // ✅ PDF report date (supports 05Feb2026 кип other formats)
     const pdfDate = extractReportDate(lines);
     if (!pdfDate) return alert("PDF report date not found in header!");
     console.log("📅 PDF date detected:", pdfDate);
@@ -680,10 +710,11 @@ async function processCrew() {
     const dayKey = getDayKeyFromDate(pdfDateObj);
     console.log("🗓 Day key:", dayKey);
 
-    // ✅ Find flight & crew
-    const result = extractCrew(lines, flight);
+    // ✅ ROW-BASED CREW (FIX ♯ IN PIC/DH COLUMN)
+    const rows = await readPDFRows(file);
+    const result = extractCrewFromRows(rows, flight);
     if (!result.found) return alert("Flight not found!");
-    if (result.crew.length === 0) return alert("Flight found but NO CREW!");
+    if (result.crew.length === 0) return alert("Flight found but NO WORKING CREW (♯ removed)!");
 
     // ✅ Find route line (first line containing flight number)
     let routeLine = "";
@@ -751,9 +782,9 @@ async function processCrew() {
 
     // ✅ ONE CALL: flightdata.js OWNS rows 51–54
     await window.applyFlightDataRules({
-      flight,        // user input (still write G51)
-      flightRuleKey, // which key to use in FLIGHT_RULES (overrides for special days)
-      dayKey,        // SUN/MON/...
+      flight,
+      flightRuleKey,
+      dayKey,
       pdfDate,
       etd,
       sta,
@@ -770,3 +801,4 @@ async function processCrew() {
     alert("FAILED! Check console for details.");
   }
 }
+
