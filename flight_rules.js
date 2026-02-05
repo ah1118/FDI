@@ -80,4 +80,10 @@ window.FLIGHT_RULES = {
     addReturn: false,
   },
 
+  "6027": { // MED - Madinah
+    cells: { C51: "CZL", D51: "ALG" }, // no row 52 writes
+    flightTime: { hours: 1, minutes: 00 },
+    addReturn: false,
+  },
+
 };
