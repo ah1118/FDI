@@ -603,7 +603,7 @@ async function processCrew() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("==="));
 
-    // ✅ Detect PDF report date from header and write it to A51
+    // ✅ Detect PDF report date from header (DO NOT write here anymore)
     const pdfDate = extractReportDate(lines);
     if (!pdfDate) return alert("PDF report date not found in header!");
     console.log("📅 PDF date detected:", pdfDate);
@@ -622,7 +622,7 @@ async function processCrew() {
     }
     if (!routeLine) return alert("Route line not found in PDF!");
 
-    // ETD
+    // ETD (DO NOT write here anymore)
     const etd = extractETDFromRoute(routeLine);
     if (!etd) return alert("ETD not found in route line!");
     console.log("🕒 ETD detected:", etd);
@@ -655,13 +655,11 @@ async function processCrew() {
     await writePNCtoSheet(result.crew);
     await writeAircraftReg(reg);
 
-    // ✅ write PDF date (NOT today)
-    await writePDFReportDateToSheet(pdfDate);
-
-    // ✅ write ETD once
-    await writeETDToSheet(etd);
-
-    await window.applyFlightDataRules();
+    // ✅ ONE CALL: flightdata.js OWNS rows 51–54:
+    //    - clears A51:G54 first
+    //    - writes pdfDate + etd + flight
+    //    - applies rules (F51/E52/F52/A52/B52/G52/etc)
+    await window.applyFlightDataRules({ flight, pdfDate, etd });
 
     window.open(getSheetUrl(), "_blank");
     alert(`DONE! Crew imported. DATE: ${pdfDate} | ACFT: ${normalizeAcftReg(reg)} | ETD: ${etd}`);
