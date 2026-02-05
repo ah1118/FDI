@@ -3,7 +3,9 @@
    Owns EVERYTHING in rows 51-54 (A:G):
    - Clears first
    - Writes Date/ETD/Flight
-   - Applies flight rules
+   - Writes LEGS (C51 D51 C52 D52) from FLIGHT_RULES.cells
+   - Applies times + dates
+   - If addReturn=false (JED/MED): NEVER writes anything in row 52
    ===================================================== */
 
 // =====================================================
@@ -163,7 +165,6 @@ async function applyFlightDataRules(payload = null) {
   await clearFlightArea();
 
   // ✅ STEP 2: WRITE BASE VALUES (date + etd + flight)
-  // A51:B51 is merged, but writing both is safe
   const baseUpdates = {
     A51: pdfDateStr || "",
     B51: pdfDateStr || "",
@@ -179,7 +180,18 @@ async function applyFlightDataRules(payload = null) {
   const updates = {}; // only additional updates from rules
 
   if (rule) {
+    // copy all "cells" (including C51/D51/C52/D52 legs)
     if (rule.cells) Object.assign(updates, rule.cells);
+
+    // ✅ Return enable/disable
+    const hasReturn = rule.addReturn === true;
+
+    // ✅ If no return: NEVER write anything in row 52 (including legs)
+    if (!hasReturn) {
+      for (const k of Object.keys(updates)) {
+        if (k.endsWith("52")) delete updates[k];
+      }
+    }
 
     // 1) F51 = E51 + flightTime
     let staOutboundHHMM = null;
@@ -195,44 +207,45 @@ async function applyFlightDataRules(payload = null) {
       }
     }
 
-    // 2) G52 = G51 + 1
-    if (rule.addReturn === true) {
+    // ✅ Return calculations ONLY if hasReturn
+    if (hasReturn) {
+      // 2) G52 = G51 + 1
       updates.G52 = String(flightNum + 1);
-    }
 
-    // 3) E52 = F51 + layoverTime + return date (A52/B52)
-    let etdReturnHHMM = null;
+      // 3) E52 = F51 + layoverTime + return date (A52/B52)
+      let etdReturnHHMM = null;
 
-    if (rule.layoverTime) {
-      if (staOutboundMin == null) {
-        const staFromSheet = staOutboundHHMM ?? (await readCell("F51"));
-        staOutboundMin = parseTimeToMinutes(staFromSheet);
-      }
+      if (rule.layoverTime) {
+        if (staOutboundMin == null) {
+          const staFromSheet = staOutboundHHMM ?? (await readCell("F51"));
+          staOutboundMin = parseTimeToMinutes(staFromSheet);
+        }
 
-      const staStr = staOutboundHHMM ?? (await readCell("F51"));
-      etdReturnHHMM = addDuration(staStr, rule.layoverTime);
-      if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
+        const staStr = staOutboundHHMM ?? (await readCell("F51"));
+        etdReturnHHMM = addDuration(staStr, rule.layoverTime);
+        if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
 
-      if (staOutboundMin != null) {
-        const crossesMidnight =
-          (staOutboundMin + durationToMinutes(rule.layoverTime)) >= 1440;
+        if (staOutboundMin != null) {
+          const crossesMidnight =
+            (staOutboundMin + durationToMinutes(rule.layoverTime)) >= 1440;
 
-        const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
-        if (outboundDate) {
-          const returnDate = crossesMidnight ? addDaysUTC(outboundDate, 1) : outboundDate;
-          const returnDateStr = formatDDMonYYYY(returnDate);
+          const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
+          if (outboundDate) {
+            const returnDate = crossesMidnight ? addDaysUTC(outboundDate, 1) : outboundDate;
+            const returnDateStr = formatDDMonYYYY(returnDate);
 
-          updates.A52 = returnDateStr;
-          updates.B52 = returnDateStr;
+            updates.A52 = returnDateStr;
+            updates.B52 = returnDateStr;
+          }
         }
       }
-    }
 
-    // 4) F52 = E52 + returnFlightTime
-    if (rule.returnFlightTime) {
-      const etd = etdReturnHHMM ?? (await readCell("E52"));
-      const staReturn = addDuration(etd, rule.returnFlightTime);
-      if (staReturn) updates.F52 = staReturn;
+      // 4) F52 = E52 + returnFlightTime
+      if (rule.returnFlightTime) {
+        const etd = etdReturnHHMM ?? (await readCell("E52"));
+        const staReturn = addDuration(etd, rule.returnFlightTime);
+        if (staReturn) updates.F52 = staReturn;
+      }
     }
   }
 
