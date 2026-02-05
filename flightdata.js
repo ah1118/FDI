@@ -55,6 +55,14 @@ function splitTimePlusDays(t) {
   return { hhmm: m[1], plusDays: Number(m[2] || 0) };
 }
 
+function computeDayOffsetFromTimes(etdHHMM, staHHMM) {
+  const etdMin = parseTimeToMinutes(etdHHMM);
+  const staMin = parseTimeToMinutes(staHHMM);
+  if (etdMin == null || staMin == null) return 0;
+  // If STA clock-time is smaller than ETD => arrival next day
+  return (staMin < etdMin) ? 1 : 0;
+}
+
 // =====================================================
 // DATE HELPERS  (format: "02Feb2026")
 // =====================================================
@@ -315,7 +323,7 @@ async function applyMultiLeg(rule, payload, dayKey) {
 // Call it from app.js like:
 // applyFlightDataRules({ flight, flightRuleKey, dayKey, pdfDate, etd, sta, from, to })
 // =====================================================
-async function applyFlightDataRules(payload = null) {
+aasync function applyFlightDataRules(payload = null) {
   const flightStr = (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "")
     .toString()
     .trim();
@@ -346,8 +354,6 @@ async function applyFlightDataRules(payload = null) {
   if (flightRuleKey && RULES[flightRuleKey]) rule = RULES[flightRuleKey];
   else if (flightStr && RULES[flightStr]) rule = RULES[flightStr];
 
-  // NOTE: your current findRuleByLegs signature in the earlier file was (rules, from, to)
-  // If you changed it to accept dayKey, keep this call; otherwise remove dayKey argument.
   if (!rule) rule = findRuleByLegs(RULES, fromLeg, toLeg, dayKey);
 
   // ✅ MULTI-LEG: it owns rows 51–54 by itself
@@ -436,30 +442,36 @@ async function applyFlightDataRules(payload = null) {
       let etdReturnHHMM = null;
 
       if (rule.layoverTime) {
-        if (staOutboundMin == null) {
-          const staFromSheet = staOutboundHHMM ?? (await readCell("F51"));
-          staOutboundMin = parseTimeToMinutes(staFromSheet);
-        }
-
         const staForCalc = staOutboundHHMM ?? (await readCell("F51"));
+
         etdReturnHHMM = addDuration(staForCalc, rule.layoverTime);
         if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
 
-        // ✅ FIX: proper midnight handling for return date
-        if (staOutboundMin != null) {
+        // ✅ REAL FIX: midnight handling even when STA was computed and wrapped
+        // Uses ETD vs STA to detect if arrival is next day, then adds layover, then derives return date offset.
+        if (staForCalc && etdStr) {
           const layoverMin = durationToMinutes(rule.layoverTime);
-          const totalMin = staOutboundMin + layoverMin;
 
-          // if totalMin >= 1440 => +1 day (handles all cases cleanly)
-          const dayOffset = Math.floor(totalMin / 1440); // 0 or 1
+          const staMin = parseTimeToMinutes(staForCalc);
+          const etdMin = parseTimeToMinutes(etdStr);
 
-          const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
-          if (outboundDate) {
-            const returnDate = addDaysUTC(outboundDate, dayOffset);
-            const returnDateStr = formatDDMonYYYY(returnDate);
+          if (staMin != null && etdMin != null) {
+            // 0 or 1: arrival is next day if STA clock-time < ETD clock-time
+            const arrivalDayOffset = (staMin < etdMin) ? 1 : 0;
 
-            updates.A52 = returnDateStr;
-            updates.B52 = returnDateStr;
+            const absStaMin = arrivalDayOffset * 1440 + staMin;
+            const absReturnEtdMin = absStaMin + layoverMin;
+
+            const dayOffset = Math.floor(absReturnEtdMin / 1440); // 0 or 1 (or more if huge layover)
+
+            const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
+            if (outboundDate) {
+              const returnDate = addDaysUTC(outboundDate, dayOffset);
+              const returnDateStr = formatDDMonYYYY(returnDate);
+
+              updates.A52 = returnDateStr;
+              updates.B52 = returnDateStr;
+            }
           }
         }
       }
