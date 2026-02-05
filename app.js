@@ -457,6 +457,9 @@ function extractCrew(lines, flightNumber) {
   const crewSet = new Set();
   const roleStart = /^(CP|FO|CC|PC|FA)\b/i;
 
+  // ✅ treat these as "NOT WORKING" markers
+  const NOT_WORKING_MARK = /[♯#]/;  // add more symbols here if needed
+
   for (let i = flightIndex + 1; i < lines.length; i++) {
     let line = (lines[i] || "").trim();
 
@@ -477,7 +480,18 @@ function extractCrew(lines, flightNumber) {
 
     const fullRegex = /\b(CP|FO|CC|PC|FA)\s+([A-Za-zÀ-ÖØ-öø-ÿ'.-]+\s*)+/g;
     const matches = line.match(fullRegex);
-    if (matches) matches.forEach((m) => crewSet.add(m.trim()));
+
+    if (matches) {
+      matches.forEach((m) => {
+        const s = m.trim();
+
+        // ✅ If the crew entry (or its line) contains ♯ => skip it
+        if (NOT_WORKING_MARK.test(s) || NOT_WORKING_MARK.test(line)) return;
+
+        // optional: clean extra spaces
+        crewSet.add(s.replace(/\s+/g, " "));
+      });
+    }
   }
 
   return { found: true, crew: [...crewSet] };
