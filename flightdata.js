@@ -2,14 +2,14 @@
    flightdata.js
    Owns EVERYTHING in rows 51-54 (A:G):
    - Clears first
-   - Writes Date/ETD/Flight
+   - Writes Date/ETD/STA/Flight
    - Writes LEGS:
        Outbound: C51(from) D51(to)
        Return:   C52(from) D52(to)  (only if addReturn=true)
    - Rule lookup:
        1) by flight number
        2) fallback by legs (from/to) because flight number can change
-   - If addReturn=false (JED/MED): NEVER writes anything in row 52
+   - If addReturn=false: NEVER writes anything in row 52
    ===================================================== */
 
 // =====================================================
@@ -174,7 +174,7 @@ function findRuleByLegs(rules, from, to) {
 // =====================================================
 // MAIN: One function that owns rows 51-54
 // Call it from app.js like:
-// applyFlightDataRules({ flight, pdfDate, etd, from, to })
+// applyFlightDataRules({ flight, pdfDate, etd, sta, from, to })
 // =====================================================
 async function applyFlightDataRules(payload = null) {
   const flightStr = (payload?.flight ?? document.getElementById("flightNumber")?.value ?? "")
@@ -182,7 +182,8 @@ async function applyFlightDataRules(payload = null) {
     .trim();
 
   const pdfDateStr = (payload?.pdfDate ?? "").toString().trim(); // "02Feb2026"
-  const etdStr = (payload?.etd ?? "").toString().trim(); // "HH:MM"
+  const etdStr = (payload?.etd ?? "").toString().trim();         // "HH:MM"
+  const staStr = (payload?.sta ?? "").toString().trim();         // "HH:MM"
 
   // legs from PDF (preferred)
   const fromLeg = norm3(payload?.from);
@@ -196,14 +197,14 @@ async function applyFlightDataRules(payload = null) {
   // ✅ STEP 1: CLEAR ALWAYS
   await clearFlightArea();
 
-  // ✅ STEP 2: WRITE BASE VALUES (date + etd + flight + outbound legs)
-  // A51:B51 merged, writing both is safe
+  // ✅ STEP 2: WRITE BASE VALUES (date + legs + etd + sta + flight)
   const baseUpdates = {
     A51: pdfDateStr || "",
     B51: pdfDateStr || "",
     C51: fromLeg || "",
     D51: toLeg || "",
     E51: etdStr || "",
+    F51: staStr || "",   // ✅ STA from PDF goes here
     G51: flightStr || "",
   };
   await writeCells(baseUpdates);
@@ -223,25 +224,22 @@ async function applyFlightDataRules(payload = null) {
     // =========================
     // LEGS (write outbound/return)
     // =========================
-    // Outbound: prefer payload legs. If missing, fall back to rule.cells.
-    // Return: only if hasReturn => C52=to, D52=from
     const ruleC51 = norm3(rule?.cells?.C51);
     const ruleD51 = norm3(rule?.cells?.D51);
 
     const OUT_FROM = fromLeg || ruleC51 || "";
-    const OUT_TO = toLeg || ruleD51 || "";
+    const OUT_TO   = toLeg   || ruleD51 || "";
 
     if (OUT_FROM) updates.C51 = OUT_FROM;
-    if (OUT_TO) updates.D51 = OUT_TO;
+    if (OUT_TO)   updates.D51 = OUT_TO;
 
     if (hasReturn) {
-      if (OUT_TO) updates.C52 = OUT_TO;
+      if (OUT_TO)   updates.C52 = OUT_TO;
       if (OUT_FROM) updates.D52 = OUT_FROM;
     }
 
-    // If your rules also have other cells (like D51 etc), keep them BUT never override our computed legs above
+    // copy remaining cells except C51/D51/C52/D52 (we control those)
     if (rule.cells) {
-      // copy remaining cells except C51/D51/C52/D52 (we control those)
       for (const [k, v] of Object.entries(rule.cells)) {
         if (k === "C51" || k === "D51" || k === "C52" || k === "D52") continue;
         updates[k] = v;
@@ -259,18 +257,18 @@ async function applyFlightDataRules(payload = null) {
     // TIMES
     // =========================
 
-    // 1) F51 = E51 + flightTime
-    let staOutboundHHMM = null;
+    // 1) F51 = STA (from PDF) OR computed from E51 + flightTime
+    let staOutboundHHMM = staStr || null;
     let staOutboundMin = null;
 
-    if (rule.flightTime) {
+    if (!staOutboundHHMM && rule.flightTime) {
       const etdOutbound = etdStr || (await readCell("E51"));
       staOutboundHHMM = addDuration(etdOutbound, rule.flightTime);
+    }
 
-      if (staOutboundHHMM) {
-        updates.F51 = staOutboundHHMM;
-        staOutboundMin = parseTimeToMinutes(staOutboundHHMM);
-      }
+    if (staOutboundHHMM) {
+      updates.F51 = staOutboundHHMM; // ✅ always set F51 (PDF or computed)
+      staOutboundMin = parseTimeToMinutes(staOutboundHHMM);
     }
 
     // ✅ Return calculations ONLY if hasReturn
@@ -289,13 +287,12 @@ async function applyFlightDataRules(payload = null) {
           staOutboundMin = parseTimeToMinutes(staFromSheet);
         }
 
-        const staStr = staOutboundHHMM ?? (await readCell("F51"));
-        etdReturnHHMM = addDuration(staStr, rule.layoverTime);
+        const staForCalc = staOutboundHHMM ?? (await readCell("F51"));
+        etdReturnHHMM = addDuration(staForCalc, rule.layoverTime);
         if (etdReturnHHMM) updates.E52 = etdReturnHHMM;
 
         if (staOutboundMin != null) {
-          const crossesMidnight =
-            staOutboundMin + durationToMinutes(rule.layoverTime) >= 1440;
+          const crossesMidnight = staOutboundMin + durationToMinutes(rule.layoverTime) >= 1440;
 
           const outboundDate = parseDDMonYYYY(pdfDateStr || (await readCell("A51")));
           if (outboundDate) {
