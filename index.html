@@ -4,11 +4,9 @@
   <title>Flight Crew Import</title>
   <link rel="stylesheet" href="style.css">
 
-  <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 
   <style>
-    /* simple lock overlay */
     #lockScreen {
       position: fixed;
       inset: 0;
@@ -32,7 +30,7 @@
   <div id="lockScreen">
     <div class="lockBox">
       <h1>Locked</h1>
-      <p>Press Ctrl + Alt + Space + O to unlock</p>
+      <p>Press Ctrl + Alt + O to unlock</p>
     </div>
   </div>
 
@@ -53,29 +51,15 @@
   <script src="flight_rules.js"></script>
   <script src="flightdata.js"></script>
 
-  <!-- LOCK LOGIC -->
+  <!-- ONLY KEY LISTENER (NO VARIABLES HERE) -->
   <script>
-    let unlocked = false;
-
-    document.addEventListener("keydown", function (e) {
-      if (
-        !unlocked &&
-        e.ctrlKey &&
-        e.altKey &&
-        e.code === "Space" &&
-        e.key.toLowerCase() === "o"
-      ) {
-        unlockSite();
+    document.addEventListener("keydown", (e) => {
+      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "o") {
+        if (window.unlockSite) {
+          window.unlockSite();
+        }
       }
     });
-
-    function unlockSite() {
-      if (unlocked) return;
-      unlocked = true;
-
-      const lock = document.getElementById("lockScreen");
-      if (lock) lock.style.display = "none";
-    }
   </script>
 
 </body>
