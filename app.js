@@ -35,7 +35,6 @@ let unlocked = false;
 
 document.addEventListener("keydown", function (e) {
   if (
-    e.ctrlKey &&
     e.altKey &&
     e.code === "Space" &&
     e.key.toLowerCase() === "o"
