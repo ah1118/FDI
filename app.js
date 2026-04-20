@@ -33,15 +33,21 @@ TRXiUFADYhLF0ornhpwUmQ==
 
 let unlocked = false;
 
-document.addEventListener("keydown", function (e) {
-  if (
-    e.altKey &&
-    e.code === "Space" &&
-    e.key.toLowerCase() === "o"
-  ) {
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "o") {
     unlockSite();
   }
 });
+
+function unlockSite() {
+  if (unlocked) return;
+  unlocked = true;
+
+  const lock = document.getElementById("lockScreen");
+  if (lock) lock.style.display = "none";
+
+  console.log("🔓 Unlocked");
+}
 
 function unlockSite() {
   if (unlocked) return;
