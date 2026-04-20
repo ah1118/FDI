@@ -43,15 +43,7 @@ function unlockSite() {
   if (unlocked) return;
   unlocked = true;
 
-  const lock = document.getElementById("lockScreen");
-  if (lock) lock.style.display = "none";
-
   console.log("🔓 Unlocked");
-}
-
-function unlockSite() {
-  if (unlocked) return;
-  unlocked = true;
 
   const lock = document.getElementById("lockScreen");
   if (lock) lock.style.display = "none";
