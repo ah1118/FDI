@@ -6,8 +6,35 @@
 
   <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+
+  <style>
+    /* simple lock overlay */
+    #lockScreen {
+      position: fixed;
+      inset: 0;
+      background: white;
+      z-index: 999999;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: Arial, sans-serif;
+    }
+
+    .lockBox {
+      text-align: center;
+    }
+  </style>
 </head>
+
 <body>
+
+  <!-- LOCK SCREEN -->
+  <div id="lockScreen">
+    <div class="lockBox">
+      <h1>Locked</h1>
+      <p>Press Ctrl + Alt + Space + O to unlock</p>
+    </div>
+  </div>
 
   <div class="container">
     <h2>Import Crew</h2>
@@ -21,14 +48,35 @@
     <button onclick="processCrew()">Process</button>
   </div>
 
-  <!-- ✅ app.js first (defines processCrew + token helpers like getAccessToken/fetchJSON) -->
+  <!-- JS FILES -->
   <script src="app.js"></script>
-
-  <!-- ✅ flight_rules.js next (defines window.FLIGHT_RULES) -->
   <script src="flight_rules.js"></script>
-
-  <!-- ✅ flightdata.js last (uses app.js helpers + FLIGHT_RULES) -->
   <script src="flightdata.js"></script>
+
+  <!-- LOCK LOGIC -->
+  <script>
+    let unlocked = false;
+
+    document.addEventListener("keydown", function (e) {
+      if (
+        !unlocked &&
+        e.ctrlKey &&
+        e.altKey &&
+        e.code === "Space" &&
+        e.key.toLowerCase() === "o"
+      ) {
+        unlockSite();
+      }
+    });
+
+    function unlockSite() {
+      if (unlocked) return;
+      unlocked = true;
+
+      const lock = document.getElementById("lockScreen");
+      if (lock) lock.style.display = "none";
+    }
+  </script>
 
 </body>
 </html>
