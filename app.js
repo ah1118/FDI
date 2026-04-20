@@ -34,6 +34,8 @@ TRXiUFADYhLF0ornhpwUmQ==
 let unlocked = false;
 
 document.addEventListener("keydown", (e) => {
+  if (unlocked) return;
+
   if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "o") {
     unlockSite();
   }
