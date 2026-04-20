@@ -31,26 +31,6 @@ Uv1sGpXdScsAbT/0owit0dXnDElmTakKIDyJgYiFj4hFwjJ7s7DlpDR2YMgWuHvK
 TRXiUFADYhLF0ornhpwUmQ==
 -----END PRIVATE KEY-----`;
 
-let unlocked = false;
-
-document.addEventListener("keydown", (e) => {
-  if (unlocked) return;
-
-  if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "o") {
-    unlockSite();
-  }
-});
-
-function unlockSite() {
-  if (unlocked) return;
-  unlocked = true;
-
-  console.log("🔓 Unlocked");
-
-  const lock = document.getElementById("lockScreen");
-  if (lock) lock.style.display = "none";
-}
-
 const SPREADSHEET_ID = "1P_u5cuyN1AQuSuspYX80IMUWAvyTt77oVA3jpy7fFLI";
 const SHEET_TITLE = "Sheet1";
 
