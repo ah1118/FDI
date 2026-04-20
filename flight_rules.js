@@ -110,7 +110,7 @@ window.FLIGHT_RULES = {
 
   // 🇫🇷 FRANCE — (CDG / ORY / MRS / MLH / ETZ / LIL / LYS multi-leg)
 
-  "1118": { // CDG - Paris Charles de Gaulle
+  "1528": { // CDG - Paris Charles de Gaulle
     cells: { C51: "CZL", D51: "CDG", C52: "CDG", D52: "CZL" },
     flightTime: { hours: 2, minutes: 20 },
     layoverTime: { hours: 1, minutes: 5 },
