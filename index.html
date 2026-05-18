@@ -4,35 +4,10 @@
   <title>Flight Crew Import</title>
   <link rel="stylesheet" href="style.css">
 
+  <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-
-  <style>
-    #lockScreen {
-      position: fixed;
-      inset: 0;
-      background: white;
-      z-index: 999999;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      font-family: Arial, sans-serif;
-    }
-
-    .lockBox {
-      text-align: center;
-    }
-  </style>
 </head>
-
 <body>
-
-  <!-- LOCK SCREEN -->
-  <div id="lockScreen">
-    <div class="lockBox">
-      <h1>Locked</h1>
-      <p>Press Ctrl + Alt + O to unlock</p>
-    </div>
-  </div>
 
   <div class="container">
     <h2>Import Crew</h2>
@@ -46,21 +21,14 @@
     <button onclick="processCrew()">Process</button>
   </div>
 
-  <!-- JS FILES -->
+  <!-- ✅ app.js first (defines processCrew + token helpers like getAccessToken/fetchJSON) -->
   <script src="app.js"></script>
-  <script src="flight_rules.js"></script>
-  <script src="flightdata.js"></script>
 
-  <!-- ONLY KEY LISTENER (NO VARIABLES HERE) -->
-  <script>
-    document.addEventListener("keydown", (e) => {
-      if (e.ctrlKey && e.altKey && key === "o") {
-        if (window.unlockSite) {
-          window.unlockSite();
-        }
-      }
-    });
-  </script>
+  <!-- ✅ flight_rules.js next (defines window.FLIGHT_RULES) -->
+  <script src="flight_rules.js"></script>
+
+  <!-- ✅ flightdata.js last (uses app.js helpers + FLIGHT_RULES) -->
+  <script src="flightdata.js"></script>
 
 </body>
 </html>
